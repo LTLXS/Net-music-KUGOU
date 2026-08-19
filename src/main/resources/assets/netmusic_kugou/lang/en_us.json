@@ -1,0 +1,3 @@
+{
+  "_comment": "所有可翻译文本都被各 Screen 改成 Component.literal 硬编码了（中文 UI），lang 表留空文件占位"
+}

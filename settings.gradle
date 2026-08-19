@@ -1,0 +1,27 @@
+
+pluginManagement {
+    repositories {
+        // 本地镜像必须最前（包含 neoform-runtime 的 .module 文件）
+        maven { url = 'file:/F:/minecraft%20mods/local-mirror/' }
+        gradlePluginPortal()
+        // 国内镜像（优先）
+        maven { url = 'https://mirrors4.qlu.edu.cn/bmclapi/' }
+    }
+}
+
+plugins {
+    // 已使用 org.gradle.java.home 指向本地 JDK 21，不需要 foojay 自动下载
+    // id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+dependencyResolutionManagement {
+    // PREFER_PROJECT: 项目 repositories 优先；settings 仅作兜底
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        // 本地镜像（.module 文件所在）
+        maven { url = 'file:/F:/minecraft%20mods/local-mirror/' }
+        // 国内镜像
+        maven { url = 'https://mirrors4.qlu.edu.cn/bmclapi/' }
+        mavenCentral()
+    }
+}

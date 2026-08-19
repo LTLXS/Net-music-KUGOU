@@ -1,0 +1,49 @@
+
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "BSD-3-Clause"
+
+[[mods]]
+modId = "netmusic_kugou"
+version = "${version}"
+displayName = "NetMusicNeedKuGou"
+authors = "ATXLS"
+description = "NetMusic 扩展模组，接入酷狗音乐源。支持在线搜索、多音质选择、CD 刻录与歌词显示。"
+
+[[mixins]]
+config = "netmusic_kugou.mixins.json"
+
+[[dependencies.netmusic_kugou]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.22)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
+modId = "netmusic"
+type = "required"
+versionRange = "[1.5.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
+modId = "touhou_little_maid"
+type = "optional"
+versionRange = "[1.5.0,)"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
+modId = "cloth_config"
+type = "required"
+versionRange = "[15.0,)"
+ordering = "NONE"
+side = "CLIENT"

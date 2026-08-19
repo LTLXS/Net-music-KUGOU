@@ -1,0 +1,50 @@
+# Build artifacts
+build/
+bin/
+out/
+.gradle/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+.vs/
+.classpath
+.project
+.settings/
+nbproject/
+nbbuild/
+nbdist/
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Java (root-level only)
+/*.class
+
+# NeoGradle run directories
+run/
+run-client/
+run-server/
+
+# Generated resources
+src/generated/
+
+# Diagnostic / temp files (root-level only)
+/*.log
+/*.txt
+/*.ps1
+/*.out
+/*.err
+/*.zip
+
+# Temp directories
+tmp-extract/
+moddev-extract/
+moddev-extract2/
+reference/
+nayuki_extract/
