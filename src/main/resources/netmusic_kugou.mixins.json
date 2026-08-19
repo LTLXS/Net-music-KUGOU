@@ -1,0 +1,25 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.github.tartaricacid.netmusic.kugou.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "netmusic_kugou.refmap.json",
+  "mixins": [
+    "CDBurnerMenuMixin",
+    "MaidMusicToClientMessageShowLyricMixin",
+    "TileEntityMusicPlayerSetPlayMixin"
+  ],
+  "client": [
+    "CDBurnerMenuScreenMixin",
+    "MusicToClientMessageMixin",
+    "NetMusicSoundMixin",
+    "LyricChatBubbleRendererMixin",
+    "MusicPlayerRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}
