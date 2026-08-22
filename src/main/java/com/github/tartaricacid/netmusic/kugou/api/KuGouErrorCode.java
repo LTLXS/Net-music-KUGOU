@@ -34,6 +34,13 @@ public final class KuGouErrorCode {
             case 30003: return "验证码错误";
             case 40001: return "设备未注册";
             case 40002: return "设备已被禁用";
+            case 31833: return "当前账号或音源无此歌曲版权（可用魔法 ppage_id 兜底/VIP 升级失败）";
+            case 61003: return "版权方要求,此歌曲无法提供";
+            case 30101: return "歌曲下架或暂无可播放资源";
+            case 35104: return "当前音质无可用版权或参数不匹配，将降级到下一音质/兜底接口";
+            case 20006: return "服务端签名校验失败（平台或签名盐不匹配）";
+            case 20010: return "请求参数格式错误（JSON 字段类型或结构不匹配）";
+            case 20008: return "缺少请求 Body（v6/priv_url 需要 POST JSON）";
             default: return "未知错误";
         }
     }

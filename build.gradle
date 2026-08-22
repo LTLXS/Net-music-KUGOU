@@ -6,7 +6,7 @@ plugins {
     id 'net.neoforged.moddev' version '1.0.14'
 }
 
-version = '1.0.0-alpha-neoforge+mc1.21.1'
+version = '1.0.5-beta-mc1.21.1'
 group = 'com.github.tartaricacid'
 
 base {
@@ -162,6 +162,9 @@ processResources {
     filesMatching('META-INF/neoforge.mods.toml') {
         expand 'version': project.version
     }
+    
+    // 确保资源文件以 UTF-8 编码处理（含中文的 toml 文件需要此设置）
+    filteringCharset = 'UTF-8'
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -182,7 +185,7 @@ jar {
 tasks.register('copyToMods') {
     dependsOn 'jar'
     doLast {
-        def target = 'D:\\pcl ce\\.minecraft\\versions\\1.21.1\\mods\\netmusic_kugou-1.0.0-neoforge+mc1.21.1.jar'
+        def target = 'D:\\pcl ce\\0-1\\.minecraft\\versions\\modtest\\mods\\netmusic_kugou-1.0.0-beta-neoforge+mc1.21.1.jar'
         def source = file("$buildDir/libs/netmusic_kugou-${version}.jar")
         if (source.exists()) {
             try {

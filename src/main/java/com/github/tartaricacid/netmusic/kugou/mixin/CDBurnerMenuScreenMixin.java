@@ -48,6 +48,8 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
     private Button netmusickugou$searchButton;
     @Unique
     private KuGouSearchScreen.SearchResult netmusickugou$lastKuGouResult;
+    @Unique
+    private volatile boolean netmusickugou$burning = false;
 
     protected CDBurnerMenuScreenMixin(AbstractContainerMenu menu, Inventory inventory, Component title) {
         super(menu, inventory, title);
@@ -120,6 +122,12 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             return;
         }
 
+        if (netmusickugou$burning) {
+            this.tips = Component.literal("正在获取歌曲URL，请稍候...");
+            ci.cancel();
+            return;
+        }
+
         Slot inputSlot = this.getMenu().getSlot(0);
         ItemStack cd = inputSlot.getItem();
         if (cd.isEmpty()) {
@@ -135,37 +143,54 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             return;
         }
 
-        KuGouSearchScreen.SearchResult result = this.netmusickugou$lastKuGouResult;
-        String url;
-        try {
-            url = KuGouApiClient.getSongUrl(result.fileHash, result.albumId).get(15, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            KuGouLogger.error("Failed to get song URL for KuGou burn", e);
-            this.tips = Component.literal("获取歌曲URL失败: " + e.getMessage());
-            ci.cancel();
-            return;
-        }
+        final KuGouSearchScreen.SearchResult result = this.netmusickugou$lastKuGouResult;
+        final boolean readOnly = this.readOnlyButton != null && this.readOnlyButton.selected();
 
-        if (url == null || url.isEmpty()) {
-            this.tips = Component.literal("获取歌曲URL失败");
-            ci.cancel();
-            return;
-        }
+        // ⚠️ 绝不允许在渲染线程里 .get() / 阻塞！异步获取 URL，拿到后再发 SetMusicIDMessage。
+        netmusickugou$burning = true;
+        this.tips = Component.literal("正在获取歌曲URL，请稍候...");
+        final CDBurnerMenuScreenMixin self = this;
 
-        ItemMusicCD.SongInfo songInfo = new ItemMusicCD.SongInfo();
-        songInfo.songName = result.songName;
-        songInfo.songUrl = url;
-        songInfo.songTime = result.duration;
-        songInfo.artists = Lists.newArrayList(result.singerName);
-        songInfo.readOnly = this.readOnlyButton != null && this.readOnlyButton.selected();
+        KuGouApiClient.getSongUrl(result.fileHash, result.albumId)
+                .orTimeout(15, TimeUnit.SECONDS)
+                .whenComplete((url, throwable) -> {
+                    // 异步完成后，切回主线程更新 UI + 发包
+                    Minecraft minecraft = Minecraft.getInstance();
+                    minecraft.execute(() -> {
+                        try {
+                            if (throwable != null) {
+                                KuGouLogger.error("Failed to get song URL for KuGou burn", throwable);
+                                self.tips = Component.literal("获取歌曲URL失败: " + throwable.getMessage());
+                                return;
+                            }
+                            if (url == null || url.isEmpty()) {
+                                self.tips = Component.literal("获取歌曲URL失败");
+                                return;
+                            }
 
-        NetworkHandler.sendToServer(new SetMusicIDMessage(songInfo));
-        // 把 fileHash / albumId 写入静态缓存，供服务端 CDBurnerMenuMixin 读取。
-        // （集成服务器模式下客户端/服务端共享 JVM，静态变量可传递数据）
-        BurnDataCache.set(result.fileHash, result.albumId);
-        KuGouLogger.info("KuGou song burned: {} (hash={})", result.songName, result.fileHash);
+                            ItemMusicCD.SongInfo songInfo = new ItemMusicCD.SongInfo();
+                            songInfo.songName = result.songName;
+                            songInfo.songUrl = url;
+                            songInfo.songTime = result.duration;
+                            songInfo.artists = Lists.newArrayList(result.singerName);
+                            songInfo.readOnly = readOnly;
 
-        this.netmusickugou$lastKuGouResult = null;
+                            String urlPreview = url.length() < 80 ? url : url.substring(0, 80) + "...";
+                            KuGouLogger.info("SetMusicIDMessage send: song={}, urlLen={}, prefix={}",
+                                    result.songName, url.length(), urlPreview);
+
+                            NetworkHandler.sendToServer(new SetMusicIDMessage(songInfo));
+                            BurnDataCache.set(result.fileHash, result.albumId);
+                            KuGouLogger.info("KuGou song burned: {} (hash={})", result.songName, result.fileHash);
+
+                            self.netmusickugou$lastKuGouResult = null;
+                            self.tips = Component.literal("刻录成功 (URL len=" + url.length() + ")");
+                        } finally {
+                            netmusickugou$burning = false;
+                        }
+                    });
+                });
+
         ci.cancel();
     }
 

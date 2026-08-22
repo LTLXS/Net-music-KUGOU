@@ -64,6 +64,9 @@ public class NetMusicKuGou {
     private static ScheduledExecutorService vipScheduler;
     private static ScheduledExecutorService urlRefreshScheduler;
 
+    /** 确保 KuGouAudioStreamHandler 只注入一次（即使 LoggingIn 被重入调用也安全）。 */
+    private static volatile boolean kuGouAudioHandlerInjected = false;
+
     /**
      * 周期扫描玩家物品栏、检查并自动续期失效 CD URL 的调度器。
      * <p>
@@ -261,6 +264,10 @@ public class NetMusicKuGou {
             // 从配置文件加载持久化的登录状态
             loadState();
 
+            // 注册异步预取 -> URL 变更后的 "延迟1 tick 重新 setPlayToClient" 回调
+            com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch.setOnRefreshChangedCallback(
+                    (level, pos, oldUrl, newUrl) -> scheduleReplayWithNewUrl(level, pos, oldUrl, newUrl));
+
             // 异步注册设备
             KuGouApiClient.ensureDeviceRegistered()
                     .thenAccept(ready -> {
@@ -283,6 +290,11 @@ public class NetMusicKuGou {
      */
     @SubscribeEvent
     public static void onClientLoggingIn(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingIn event) {
+        // ===== 第一步：注入酷狗专属 AudioStreamHandler（优先级最高，避免 DirectHttpHandler 用网易云 UA 拉酷狗 403）=====
+        if (FMLEnvironment.dist.isClient() && !kuGouAudioHandlerInjected) {
+            injectKuGouAudioStreamHandler();
+        }
+
         if (!FMLEnvironment.dist.isClient()) {
             return;
         }
@@ -296,6 +308,137 @@ public class NetMusicKuGou {
             return;
         }
         triggerAutoReceiveVip();
+    }
+
+    /**
+     * 通过反射强制把 {@link com.github.tartaricacid.netmusic.kugou.audio.KuGouAudioStreamHandler}
+     * 插进父模组 {@code AudioStreamHandlerManager.HANDLERS}。
+     * <p>
+     * 为什么不用官方 {@code registerHandler}？因为父模组 {@code AudioStreamHandlerManager.init()}
+     * 内部会在注册完自带的 5 个 handler 后立刻：
+     * <pre>
+     *   HANDLERS.sort(...)
+     *   HANDLERS = ImmutableList.copyOf(HANDLERS);  // 从此 HANDLERS 变成 ImmutableList
+     * </pre>
+     * 之后再调用官方 {@code registerHandler} 会被 {@code if (HANDLERS instanceof ImmutableCollection) return error;} 直接拒绝。
+     * 我们完全不知道 NetMusic 父模组的 init 何时触发（ClientConstructor 前后的差异、集成服/远程服的差异），
+     * 所以在第一次 ClientLoggingIn 时"反射 setAccessible 直接写 HANDLERS 字段"最稳，兼容性最好。
+     */
+    private static synchronized void injectKuGouAudioStreamHandler() {
+        if (kuGouAudioHandlerInjected) return;
+        try {
+            Class<?> mgr = Class.forName("com.github.tartaricacid.netmusic.client.api.AudioStreamHandlerManager");
+            java.lang.reflect.Field handlersField = mgr.getDeclaredField("HANDLERS");
+            handlersField.setAccessible(true);
+            // 去掉 final 修饰（Java 12+ 需要先改 modifiers）
+            try {
+                java.lang.reflect.Field modifiersField = java.lang.reflect.Field.class.getDeclaredField("modifiers");
+                modifiersField.setAccessible(true);
+                modifiersField.setInt(handlersField, handlersField.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
+            } catch (Throwable ignore) { /* 某些 JDK 实现不让改 modifiers，继续尝试直接 set。*/ }
+
+            Object current = handlersField.get(null);
+            java.util.List<Object> newList;
+            if (current instanceof java.util.List<?> lst) {
+                newList = new java.util.ArrayList<>(lst.size() + 1);
+                // 把现存的所有 handler 搬过去
+                for (Object h : lst) {
+                    newList.add(h);
+                }
+            } else {
+                newList = new java.util.ArrayList<>(1);
+            }
+            // 追加我们的 handler
+            Object ourHandler = Class.forName("com.github.tartaricacid.netmusic.kugou.audio.KuGouAudioStreamHandler")
+                    .getDeclaredConstructor().newInstance();
+            newList.add(ourHandler);
+            // 按优先级降序排序（和父 init 的逻辑完全一致）
+            newList.sort((h1, h2) -> {
+                try {
+                    java.lang.reflect.Method m = h1.getClass().getMethod("getPriority");
+                    int p1 = (int) m.invoke(h1);
+                    int p2 = (int) m.invoke(h2);
+                    return Integer.compare(p2, p1);
+                } catch (Throwable t) {
+                    return 0;
+                }
+            });
+            // 包装成 ImmutableList（父模组代码期望 HANDLERS 是不可变的，避免后续并发问题）
+            java.util.List<Object> immutable = com.google.common.collect.ImmutableList.copyOf(newList);
+            handlersField.set(null, immutable);
+            kuGouAudioHandlerInjected = true;
+            KuGouLogger.info(
+                    "[KuGouAudio] Injected KuGouAudioStreamHandler(priority=100). HANDLERS size now={}, first handler={}",
+                    immutable.size(),
+                    immutable.isEmpty() ? "none" : immutable.get(0).getClass().getName());
+        } catch (Throwable t) {
+            KuGouLogger.error("[KuGouAudio] Failed to inject KuGouAudioStreamHandler. KuGou CDN will keep using NetEase UA (may 403 randomly): {}",
+                    t.getMessage(), t);
+        }
+    }
+
+    /**
+     * 异步预取结束但 setPlayToClient 已经带着旧 URL 起飞后走的分支：
+     * 把新 URL 写回 TileEntity slot 0 的 CD NBT，延迟 1 tick 再重新触发 setPlayToClient，
+     * 实现"无缝切歌"——原来的旧 URL 因为过期/403 拉流失败，1 tick 后用新 URL 重新发包起播，
+     * 玩家最多只感知 1~2 秒无声音（而不是整首歌放失败要重新右键）。
+     */
+    private static void scheduleReplayWithNewUrl(net.minecraft.world.level.Level level,
+                                                 net.minecraft.core.BlockPos pos,
+                                                 String oldUrl,
+                                                 String newUrl) {
+        if (level == null || pos == null || newUrl == null || newUrl.isEmpty()) return;
+        if (level.isClientSide()) return; // 只能在服务端操作 BlockEntity + 发包
+
+        net.minecraft.server.MinecraftServer server = level.getServer();
+        if (server == null) return;
+        // 延迟 1 tick（下个 server tick）执行：
+        // ① 避免与正在进行的 setPlayToClient 同时写入 TileEntity 发生竞争
+        // ② 给 MusicToClientMessage 旧消息发送完毕留一个间隔
+        server.execute(() -> {
+            try {
+                net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(pos);
+                if (!(be instanceof com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer mp)) {
+                    KuGouLogger.warn("[KuGouReplay] TileEntity at pos={} not TileEntityMusicPlayer, skip", pos);
+                    return;
+                }
+                net.neoforged.neoforge.items.IItemHandler inv = mp.getPlayerInv();
+                if (inv == null) return;
+                net.minecraft.world.item.ItemStack cd = inv.getStackInSlot(0);
+                if (cd == null || cd.isEmpty()) return;
+                if (!com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.isMusicCd(cd)) return;
+
+                // 把新 URL 写进 CD NBT（之后 clone songInfo 时也会带进去）
+                com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.updateSongUrl(cd, newUrl);
+                // 顺便刷新 burnTime（等下 isExpired 判定我们更稳）
+                com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.updateData(cd, d ->
+                        new com.github.tartaricacid.netmusic.kugou.support.CdAddonData(
+                                d.fileHash(), d.albumId(), System.currentTimeMillis(), d.lrc(), d.lrcTrans()));
+
+                // 从 CD NBT 重新组装 SongInfo，然后反射调用 setPlayToClient
+                com.github.tartaricacid.netmusic.item.ItemMusicCD.SongInfo info =
+                        com.github.tartaricacid.netmusic.item.ItemMusicCD.getSongInfo(cd);
+                if (info == null) {
+                    KuGouLogger.warn("[KuGouReplay] Slot 0 CD has no SongInfo, cannot re-setPlayToClient");
+                    return;
+                }
+                // 无论原 info.songUrl 是什么，强制覆盖为新 URL
+                info.songUrl = newUrl;
+                // 反射调用 TileEntityMusicPlayer.setPlayToClient(SongInfo)
+                java.lang.reflect.Method m = com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer.class
+                        .getDeclaredMethod("setPlayToClient", com.github.tartaricacid.netmusic.item.ItemMusicCD.SongInfo.class);
+                m.setAccessible(true);
+                m.invoke(mp, info);
+                KuGouLogger.info(
+                        "[KuGouReplay] Re-setPlayToClient after 1 tick for pos={}: oldUrlLen={} newUrlLen={}, song={}",
+                        pos,
+                        oldUrl == null ? 0 : oldUrl.length(),
+                        newUrl.length(),
+                        info.songName);
+            } catch (Throwable t) {
+                KuGouLogger.error("[KuGouReplay] Re-setPlayToClient failed at pos={}: {}", pos, t.getMessage(), t);
+            }
+        });
     }
 
     private static void triggerAutoReceiveVip() {
@@ -407,8 +550,30 @@ public class NetMusicKuGou {
         if (!KuGouConfig.isLoggedIn()) {
             return;
         }
-        if (!(event.getLevel().getBlockState(event.getPos()).getBlock()
-                instanceof net.minecraft.world.level.block.JukeboxBlock)) {
+        // ====== 判断：原版唱片机 JukeboxBlock **或** 父模组 NetMusic 的方块音响（TileEntityMusicPlayer）======
+        // 注意：不能只靠 instanceof JukeboxBlock 判定——绝大多数情况下用户放的是 NetMusic 自带的"方块音响"！
+        boolean isJukeboxLike = false;
+        net.minecraft.world.level.block.state.BlockState bs = event.getLevel().getBlockState(event.getPos());
+        if (bs.getBlock() instanceof net.minecraft.world.level.block.JukeboxBlock) {
+            // 原版 JukeboxBlock：用 HAS_RECORD 判断是否有唱片
+            if (bs.hasProperty(net.minecraft.world.level.block.JukeboxBlock.HAS_RECORD)
+                    && bs.getValue(net.minecraft.world.level.block.JukeboxBlock.HAS_RECORD)) {
+                return;
+            }
+            isJukeboxLike = true;
+        } else {
+            // 父模组方块音响（BlockMusicPlayer -> TileEntityMusicPlayer）
+            net.minecraft.world.level.block.entity.BlockEntity be = event.getLevel().getBlockEntity(event.getPos());
+            if (be instanceof com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer mp) {
+                // playerInv slot 0 非空 = 已经有 CD 了，不处理（通常这时右键是"停止播放/取出CD"）
+                net.neoforged.neoforge.items.IItemHandler inv = mp.getPlayerInv();
+                if (inv != null && !inv.getStackInSlot(0).isEmpty()) {
+                    return;
+                }
+                isJukeboxLike = true;
+            }
+        }
+        if (!isJukeboxLike) {
             return;
         }
         ItemStack held = event.getItemStack();
@@ -418,24 +583,30 @@ public class NetMusicKuGou {
         if (com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.readOriginalInfo(held).isEmpty()) {
             return;
         }
-        net.minecraft.world.level.block.state.BlockState jukeboxState =
-                event.getLevel().getBlockState(event.getPos());
-        if (jukeboxState.hasProperty(net.minecraft.world.level.block.JukeboxBlock.HAS_RECORD)
-                && jukeboxState.getValue(net.minecraft.world.level.block.JukeboxBlock.HAS_RECORD)) {
-            return;
-        }
 
-        try {
-            com.github.tartaricacid.netmusic.kugou.support.UrlRefresher refresher =
-                    new com.github.tartaricacid.netmusic.kugou.support.UrlRefresher();
-            boolean refreshed = refresher.tryRefreshOne(held);
-            if (refreshed) {
-                KuGouLogger.info("[UrlRefresh] Refreshed CD on jukebox insert at {} for player {}",
-                        event.getPos(), event.getEntity().getName().getString());
-            }
-        } catch (Throwable t) {
-            KuGouLogger.warn("[UrlRefresh] On-insert probe failed, letting insert proceed: {}", t.getMessage());
-        }
+        // ⚠️ 这里绝对不能同步 forceRefreshOne！RightClickBlock 在服务端主线程，同步 HTTP 2-4 秒会卡爆炸
+        // → 玩家体感"插CD卡一下"、方块音响 use() 流程被判定超时、CD 没入槽、必须右键好几次才成功。
+        // 改成：提交异步预取 + 存 ConcurrentHashMap；紧接着的 setPlayToClient HEAD 里 tryTake(最多等200ms)，
+        // 预取没在 200ms 内完成就先用旧 URL 起播，后台完事后通过 callback 延迟 1 tick 重新 setPlayToClient 切新 URL。
+        final net.minecraft.core.BlockPos pos = event.getPos();
+        final java.util.UUID playerId = event.getEntity().getUUID();
+        final ItemStack cdSnap = held.copy();
+        final net.minecraft.world.level.Level level = event.getLevel();
+        // 当前 CD 上的 URL 用来后面异步回调时比较"新旧 URL 是否一致"
+        final String curUrl = com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.readSongUrl(cdSnap);
+
+        com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch.asyncPrefetch(pos, playerId, cdSnap);
+
+        // 如果 asyncPrefetch 500ms 后还没命中 setPlayToClient（例如玩家右键被父模组 GUI 打开打断了），
+        // 就手动兜底一次:异步刷新完后如果 URL 真的变了，把手上这张 CD 的 NBT 也提前写好。
+        // 这样即便走了其他罕见路径也尽量让下一轮 play 拿到新鲜 URL。
+        com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch.submitAsyncRefreshThenMaybeReplay(
+                level, pos, playerId, cdSnap, curUrl);
+
+        KuGouLogger.info(
+                "[UrlRefresh] Async-prefetch submitted for CD insert at pos={}, player={}, curUrlLen={}",
+                pos, event.getEntity().getName().getString(),
+                curUrl == null ? 0 : curUrl.length());
     }
 
     @SubscribeEvent

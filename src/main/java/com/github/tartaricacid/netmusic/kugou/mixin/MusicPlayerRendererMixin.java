@@ -4,9 +4,10 @@ import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.client.event.ConfigEvent;
 import com.github.tartaricacid.netmusic.client.renderer.MusicPlayerRenderer;
 import com.github.tartaricacid.netmusic.config.GeneralConfig;
-import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import com.github.tartaricacid.netmusic.item.ItemMusicCD;
 import com.github.tartaricacid.netmusic.kugou.config.ClientConfig;
 import com.github.tartaricacid.netmusic.kugou.lyric.BlockRomajiRegistry;
+import com.github.tartaricacid.netmusic.kugou.util.MirrorLyricRenderer;
 import com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer;
 import com.mojang.blaze3d.vertex.PoseStack;
 import it.unimi.dsi.fastutil.ints.Int2ObjectSortedMap;
@@ -17,10 +18,14 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.world.item.ItemStack;
+import net.neoforged.neoforge.items.IItemHandler;
 import org.apache.commons.lang3.StringUtils;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
+
+import java.util.Set;
 
 /**
  * Mixin 到父模组 {@code MusicPlayerRenderer.renderLyric}，把渲染从 2 行（原文 + 翻译）
@@ -127,6 +132,9 @@ public abstract class MusicPlayerRendererMixin {
         if (translatedLine != null || romajiLine != null) y += 0.5f;
         if (romajiLine != null) y += 0.5f;
 
+        // 从 CD 获取歌曲名用于彩蛋检测
+        String songName = getSongNameFromCD(te);
+
         poseStack.pushPose();
         poseStack.translate(0.5, 1.625, 0.5);
 
@@ -158,24 +166,72 @@ public abstract class MusicPlayerRendererMixin {
         MultiBufferSource.BufferSource textSource = Minecraft.getInstance().renderBuffers().bufferSource();
         com.mojang.blaze3d.systems.RenderSystem.disableCull();
 
-        if (currentLine != null && currentLine != Component.empty()) {
-            float currentLineWidth = (float) (-this.font.width(currentLine) / 2);
-            // 必须用 textSource（Sodium pipeline 不会 flush bufferIn 的 text RenderType）。
-            this.font.drawInBatch(currentLine, currentLineWidth, -y, currentColor, false,
-                    poseStack.last().pose(), textSource, Font.DisplayMode.NORMAL,
-                    bgColor, combinedLightIn);
-        }
-        if (translatedLine != null) {
-            float w = (float) (-this.font.width(translatedLine) / 2);
-            this.font.drawInBatch(translatedLine, w, -y - 12, transColor, false,
-                    poseStack.last().pose(), textSource, Font.DisplayMode.NORMAL,
-                    bgColor, combinedLightIn);
+        // MV 副歌第二、三次 "あなたには僕が見えるか?" 处：正常行与镜像行交换位置
+        boolean swapEgg = isMirrorEggSong(songName)
+                && isSwapMoment(songName, lyric, lyrics.firstIntKey());
+
+        if (swapEgg) {
+            // 交换：正常行位置渲染左右镜像文字（全不透明，NORMAL 深度）
+            if (currentLine != null && currentLine != Component.empty()) {
+                MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                        currentLine, -y, currentColor, combinedLightIn, true,
+                        Font.DisplayMode.NORMAL);
+            }
+            if (translatedLine != null) {
+                MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                        translatedLine, -y - 12, transColor, combinedLightIn, true,
+                        Font.DisplayMode.NORMAL);
+            }
+        } else {
+            if (currentLine != null && currentLine != Component.empty()) {
+                float currentLineWidth = (float) (-this.font.width(currentLine) / 2);
+                // 必须用 textSource（Sodium pipeline 不会 flush bufferIn 的 text RenderType）。
+                this.font.drawInBatch(currentLine, currentLineWidth, -y, currentColor, false,
+                        poseStack.last().pose(), textSource, Font.DisplayMode.NORMAL,
+                        bgColor, combinedLightIn);
+            }
+            if (translatedLine != null) {
+                float w = (float) (-this.font.width(translatedLine) / 2);
+                this.font.drawInBatch(translatedLine, w, -y - 12, transColor, false,
+                        poseStack.last().pose(), textSource, Font.DisplayMode.NORMAL,
+                        bgColor, combinedLightIn);
+            }
         }
         if (romajiLine != null) {
             float w = (float) (-this.font.width(romajiLine) / 2);
             this.font.drawInBatch(romajiLine, w, -y - 24, romajiColor, false,
                     poseStack.last().pose(), textSource, Font.DisplayMode.NORMAL,
                     bgColor, combinedLightIn);
+        }
+
+        // === 彩蛋：镜像歌词（仅对特定歌曲）===
+        // 布局（上→下）：罗马音 / 翻译 / 原文 / 镜像原文 / 镜像翻译。
+        // 镜像块以 12 字体单位行距排列，镜像原文基线 = 主行底边（-y+9）+2 间隙
+        if (isMirrorEggSong(songName)) {
+            if (swapEgg) {
+                // 交换：镜像位置渲染正常文字（半透明穿透）
+                if (currentLine != null && currentLine != Component.empty()) {
+                    MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                            currentLine, -y + 11, fadeColor(currentColor), combinedLightIn,
+                            false, Font.DisplayMode.SEE_THROUGH);
+                }
+                if (translatedLine != null) {
+                    MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                            translatedLine, -y + 23, fadeColor(transColor), combinedLightIn,
+                            false, Font.DisplayMode.SEE_THROUGH);
+                }
+            } else {
+                if (currentLine != null && currentLine != Component.empty()) {
+                    MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                            currentLine, -y + 11, fadeColor(currentColor), combinedLightIn,
+                            true, Font.DisplayMode.SEE_THROUGH);
+                }
+                if (translatedLine != null) {
+                    MirrorLyricRenderer.render(poseStack, textSource, this.font,
+                            translatedLine, -y + 23, fadeColor(transColor), combinedLightIn,
+                            true, Font.DisplayMode.SEE_THROUGH);
+                }
+            }
         }
 
         // 强制提交 textSource 的文字顶点到 GPU（bufferIn 不会被 endBatch，
@@ -212,5 +268,113 @@ public abstract class MusicPlayerRendererMixin {
             }
         }
         return best;
+    }
+
+    /**
+     * 彩蛋歌曲关键字列表。
+     * 《アンノウン・マザーグース》的多种写法，用于触发镜像歌词效果。
+     */
+    private static final Set<String> MIRROR_EGG_KEYWORDS = Set.of(
+            "アンノウン", "unknown mother", "unknownmothergoose",
+            "あんのうん", "announ", "mothergoose"
+    );
+
+    /**
+     * 从播放器 CD 中获取当前歌曲名。
+     */
+    private static String getSongNameFromCD(TileEntityMusicPlayer te) {
+        try {
+            IItemHandler inv = te.getPlayerInv();
+            if (inv != null) {
+                ItemStack cd = inv.getStackInSlot(0);
+                if (!cd.isEmpty()) {
+                    ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
+                    if (info != null) {
+                        return info.songName;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * 检测当前歌曲是否为彩蛋歌曲（触发镜像效果）。
+     */
+    private static boolean isMirrorEggSong(String songName) {
+        if (songName == null) return false;
+        String lower = songName.toLowerCase();
+        for (String kw : MIRROR_EGG_KEYWORDS) {
+            if (lower.contains(kw)) return true;
+        }
+        return false;
+    }
+
+    /** 交换彩蛋状态；换歌或进度大幅回退（重播）时重置 */
+    private static String lastEggSong = null;
+    private static int lastSeenTick = -1;
+    /** 该句已出现次数（第 1 次、第 2 次…） */
+    private static int occurCount = 0;
+    /** 上一次触发行的 tick，避免同一行重复计数 */
+    private static int lastOccurLyricTick = -1;
+    /** 当前交换行的 tick：该行渲染期间持续交换（-1=不在交换期） */
+    private static int swapFiredTick = -1;
+
+    /**
+     * "あなたには僕が見えるか?" 在<b>第二次</b>和<b>第三次</b>出现时触发交换，
+     * 之后（第 4 次及以后）不再触发。
+     * <p>
+     * <b>用当前行 tick 作行标识</b>（lyrics.firstIntKey()）：行切换时它必然
+     * 变化、同行渲染期间必然不变——比文本比对（副歌同一句文本相同）和进度差
+     * （歌词行粒度与渲染时机对不上）都可靠：
+     * <ul>
+     *   <li>首次出现 → occurCount=1，不交换</li>
+     *   <li>第二次出现（新行）→ occurCount=2，交换，记录 swapFiredTick</li>
+     *   <li>第三次出现（新行）→ occurCount=3，交换，记录 swapFiredTick</li>
+     *   <li>swapFiredTick 行的后续帧 → 持续交换；tick 变化即停止</li>
+     *   <li>tick 大幅回退（重播）或换歌 → 全部重置</li>
+     * </ul>
+     */
+    private static boolean isSwapMoment(String songName, String lyric, int currentTick) {
+        if (!java.util.Objects.equals(songName, lastEggSong)) {
+            lastEggSong = songName;
+            resetSwapState();
+        }
+        // tick 大幅回退：重播/换进度，重新计数
+        if (lastSeenTick >= 0 && currentTick < lastSeenTick - 1000) {
+            resetSwapState();
+        }
+        lastSeenTick = Math.max(lastSeenTick, currentTick);
+
+        if (lyric == null || !lyric.contains("僕が見える")) {
+            return false;
+        }
+        // 同行后续渲染帧：tick 未变，持续交换
+        if (swapFiredTick >= 0 && currentTick == swapFiredTick) {
+            return true;
+        }
+        // 新的一行出现（tick 变大且与上次出现的行 tick 不同）
+        if (currentTick > lastOccurLyricTick) {
+            occurCount++;
+            lastOccurLyricTick = currentTick;
+            // 第 2、3 次出现：触发本行交换
+            if (occurCount == 2 || occurCount == 3) {
+                swapFiredTick = currentTick;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void resetSwapState() {
+        lastSeenTick = -1;
+        occurCount = 0;
+        lastOccurLyricTick = -1;
+        swapFiredTick = -1;
+    }
+
+    /** 降到 70% 不透明度（镜像/被交换的行） */
+    private static int fadeColor(int color) {
+        return 0xB3 << 24 | (color & 0x00FFFFFF);
     }
 }

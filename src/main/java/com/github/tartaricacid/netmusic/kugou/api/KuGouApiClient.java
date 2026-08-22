@@ -73,36 +73,179 @@ public final class KuGouApiClient {
     // ==================== 搜索 ====================
 
     /**
-     * 搜索歌曲
-     * 使用 mobilecdn.kugou.com 公开 API，无需签名和注册
-     * gateway.kugou.com 的 v3/search/song 已失效 (error_code: 152)
+     * 搜索歌曲。
+     * <p>
+     * 优先用 complexsearch.kugou.com(带 android 签名),失败时自动回退到 mobilecdn 公开 API。
+     * 无论走哪个分支,都保证不返回 null,并输出诊断日志。
      */
     public static CompletableFuture<List<Song>> search(String keyword, int page, int pageSize) {
         return CompletableFuture.supplyAsync(() -> {
+            List<Song> result = Collections.emptyList();
             try {
-                Map<String, Object> params = new LinkedHashMap<>();
-                params.put("format", "json");
-                params.put("keyword", keyword);
-                params.put("page", page);
-                params.put("pagesize", pageSize);
-
-                Map<String, String> headers = new LinkedHashMap<>();
-                headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-
-                String searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song";
-                HttpUtils.HttpResponse response = HttpUtils.get(searchUrl, headers, params);
-
-                if (!response.isOk()) {
-                    KuGouLogger.warn("[NetMusicKuGou] Search HTTP error: {}", response.statusCode);
-                    return Collections.emptyList();
+                KuGouLogger.info("[NetMusicKuGou] Search keyword='{}', page={}, pagesize={}", keyword, page, pageSize);
+                String dfid = KuGouConfig.dfid;
+                boolean hasDevice = (dfid != null && !dfid.isEmpty() && !"-".equals(dfid));
+                if (hasDevice) {
+                    result = searchViaComplexSearch(keyword, page, pageSize);
                 }
-
-                return parseSearchResult(response.body);
-            } catch (IOException e) {
-                KuGouLogger.error("[NetMusicKuGou] Search failed: {}", e.getMessage(), e);
-                return Collections.emptyList();
+                if (result.isEmpty()) {
+                    KuGouLogger.info(
+                            "[NetMusicKuGou] Complex search empty (dfid={}), fallback to mobilecdn",
+                            hasDevice ? dfid : "none");
+                    result = searchViaMobileCdn(keyword, page, pageSize);
+                }
+                KuGouLogger.info("[NetMusicKuGou] Search final result count: {}", result.size());
+                return result;
+            } catch (Throwable t) {
+                KuGouLogger.error("[NetMusicKuGou] Search outer exception: {}", t.toString(), t);
+                // 任何异常都最后再试一次 mobilecdn(不抛异常)
+                try {
+                    result = searchViaMobileCdn(keyword, page, pageSize);
+                    KuGouLogger.info("[NetMusicKuGou] After exception fallback result: {}", result.size());
+                } catch (Exception ignored) {
+                }
+                return result;
             }
         });
+    }
+
+    /**
+     * complexsearch 搜索(带 android 签名,可搜到无版权歌曲元数据)。
+     * 失败返回空列表,让外层自动回退 mobilecdn。
+     */
+    private static List<Song> searchViaComplexSearch(String keyword, int page, int pageSize) {
+        try {
+            int cltime = (int) (System.currentTimeMillis() / 1000);
+            String mid = KuGouConfig.mid != null ? KuGouConfig.mid : "";
+            String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
+            String appid = "3116";
+            int clientver = 11440;
+
+            // 业务参数(对齐 EchoMusic search.js)
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("albumhide", 0);
+            params.put("iscorrection", 1);
+            params.put("keyword", keyword);
+            params.put("nocollect", 0);
+            params.put("page", page);
+            params.put("pagesize", pageSize);
+            params.put("platform", "AndroidFilter");
+
+            // 默认认证参数(对齐 EchoMusic request.js defaultParams)
+            params.put("dfid", KuGouConfig.dfid);
+            params.put("mid", mid);
+            params.put("uuid", "-");
+            params.put("appid", appid);
+            params.put("clientver", clientver);
+            params.put("clienttime", String.valueOf(cltime));
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+                params.put("token", KuGouConfig.token);
+            }
+            if (!"0".equals(userid) && !userid.isEmpty()) {
+                params.put("userid", userid);
+            }
+
+            // Android 签名(Lite salt)
+            params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
+
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
+            headers.put("x-router", "complexsearch.kugou.com");
+            headers.put("dfid", KuGouConfig.dfid);
+            headers.put("mid", mid);
+            headers.put("clienttime", String.valueOf(cltime));
+            headers.put("kg-rc", "1");
+            headers.put("kg-thash", "5d816a0");
+            headers.put("kg-rec", "1");
+            headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
+
+            // Cookie(如有登录态)
+            StringBuilder cookieSb = new StringBuilder();
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+                cookieSb.append("token=").append(KuGouConfig.token).append("; ");
+            }
+            if (!"0".equals(userid) && !userid.isEmpty()) {
+                cookieSb.append("userid=").append(userid).append("; ");
+            }
+            for (var entry : KuGouConfig.cookies.entrySet()) {
+                cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
+            }
+            String cookieStr = cookieSb.toString().trim();
+            if (!cookieStr.isEmpty()) {
+                headers.put("Cookie", cookieStr);
+            }
+
+            KuGouLogger.info(
+                    "[NetMusicKuGou] ComplexSearch requesting: https://gateway.kugou.com/v3/search/song, params keys={}",
+                    params.keySet());
+            HttpUtils.HttpResponse response = HttpUtils.get(
+                    "https://gateway.kugou.com/v3/search/song", headers, params);
+            KuGouLogger.info(
+                    "[NetMusicKuGou] ComplexSearch HTTP {} bodyLen={}",
+                    response.statusCode, response.body == null ? 0 : response.body.length());
+
+            if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] ComplexSearch HTTP {} or empty body", response.statusCode);
+                return Collections.emptyList();
+            }
+
+            // 诊断:输出前 500 字符响应,方便定位错误码与格式
+            String bodyPreview = response.body.length() > 500
+                    ? response.body.substring(0, 500) + "..."
+                    : response.body;
+            KuGouLogger.info("[NetMusicKuGou] ComplexSearch body preview: {}", bodyPreview);
+
+            List<Song> result = parseSearchResult(response.body);
+            if (result.isEmpty()) {
+                // 尝试解析 error_code/errmsg
+                try {
+                    JsonObject root = GSON.fromJson(response.body, JsonObject.class);
+                    if (root != null) {
+                        int errcode = root.has("error_code") ? root.get("error_code").getAsInt() :
+                                (root.has("err_code") ? root.get("err_code").getAsInt() : -1);
+                        String errmsg = getStr(root, "errmsg");
+                        String status = root.has("status") ? String.valueOf(root.get("status").getAsInt()) : "N/A";
+                        KuGouLogger.warn(
+                                "[NetMusicKuGou] ComplexSearch empty parse, status={}, error_code={}, errmsg={}",
+                                status, errcode, errmsg);
+                    }
+                } catch (Exception pe) {
+                    KuGouLogger.warn("[NetMusicKuGou] ComplexSearch parse error-code failed: {}", pe.getMessage());
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] ComplexSearch exception: {}", e.toString(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * mobilecdn 公开 API 搜索(无需签名,仅免费歌曲)作为兜底
+     */
+    private static List<Song> searchViaMobileCdn(String keyword, int page, int pageSize) {
+        try {
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("format", "json");
+            params.put("keyword", keyword);
+            params.put("page", page);
+            params.put("pagesize", pageSize);
+
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+            HttpUtils.HttpResponse response = HttpUtils.get(
+                    "http://mobilecdn.kugou.com/api/v3/search/song", headers, params);
+
+            if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] mobilecdn HTTP {} or empty", response.statusCode);
+                return Collections.emptyList();
+            }
+            return parseSearchResult(response.body);
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] mobilecdn exception: {}", e.toString(), e);
+            return Collections.emptyList();
+        }
     }
 
     private static List<Song> parseSearchResult(String jsonStr) {
@@ -110,73 +253,183 @@ public final class KuGouApiClient {
             JsonObject root = GSON.fromJson(jsonStr, JsonObject.class);
             if (root == null) return Collections.emptyList();
 
-            int status = root.has("status") ? root.get("status").getAsInt() : -1;
-            if (status != 1) return Collections.emptyList();
+            // complexsearch: error_code=0 成功; mobilecdn: status=1 成功
+            boolean success = false;
+            if (root.has("error_code")) {
+                int err = root.get("error_code").getAsInt();
+                if (err == 0) success = true;
+            }
+            if (!success && root.has("status")) {
+                int status = root.get("status").getAsInt();
+                if (status == 1) success = true;
+            }
+            if (!success) {
+                KuGouLogger.warn("[NetMusicKuGou] Search result not success, root keys={}", root.keySet());
+                return Collections.emptyList();
+            }
 
-            JsonObject data = root.getAsJsonObject("data");
-            if (data == null) return Collections.emptyList();
-
-            JsonArray info = data.has("info") ? data.getAsJsonArray("info") :
-                    (data.has("lists") ? data.getAsJsonArray("lists") : null);
-            if (info == null) return Collections.emptyList();
+            // data 字段可能是对象或直接有结果数组
+            JsonArray results = null;
+            JsonObject dataObj = null;
+            if (root.has("data") && root.get("data").isJsonObject()) {
+                dataObj = root.getAsJsonObject("data");
+                if (dataObj.has("info") && dataObj.get("info").isJsonArray()) {
+                    results = dataObj.getAsJsonArray("info");
+                } else if (dataObj.has("lists") && dataObj.get("lists").isJsonArray()) {
+                    results = dataObj.getAsJsonArray("lists");
+                }
+            }
+            // complexsearch 某些分支结果在 data.all_songs 或 data.song
+            if (results == null && dataObj != null) {
+                if (dataObj.has("all_songs") && dataObj.get("all_songs").isJsonArray()) {
+                    results = dataObj.getAsJsonArray("all_songs");
+                } else if (dataObj.has("song") && dataObj.get("song").isJsonArray()) {
+                    results = dataObj.getAsJsonArray("song");
+                }
+            }
+            // 极端兜底:根级 lists/info
+            if (results == null) {
+                if (root.has("lists") && root.get("lists").isJsonArray()) {
+                    results = root.getAsJsonArray("lists");
+                } else if (root.has("info") && root.get("info").isJsonArray()) {
+                    results = root.getAsJsonArray("info");
+                }
+            }
+            if (results == null || results.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] Search result no songs array, dataObj keys={}",
+                        dataObj != null ? dataObj.keySet() : "N/A");
+                return Collections.emptyList();
+            }
 
             List<Song> songs = new ArrayList<>();
-            for (JsonElement elem : info) {
+            for (JsonElement elem : results) {
+                if (!elem.isJsonObject()) continue;
                 JsonObject item = elem.getAsJsonObject();
-                String hash = getStr(item, "hash");
-                // mobilecdn 公开 API 不返回 id，用 hash 替代
-                String id = getStr(item, "id");
+                // complexsearch 用 FileName / FileHash / SingerName / AlbumID / AlbumName 驼峰
+                // mobilecdn 用 songname / hash / singername / album_id / album_name 小写下划线
+                String hash = firstNonEmpty(
+                        getStr(item, "FileHash"),
+                        getStr(item, "hash"),
+                        getStr(item, "Hash"),
+                        getStr(item, "file_hash"));
+                String id = firstNonEmpty(
+                        getStr(item, "MixSongID"),
+                        getStr(item, "id"),
+                        getStr(item, "ID"),
+                        getStr(item, "song_id"));
                 if (id.isEmpty()) id = hash;
-                String name = getStr(item, "songname").isEmpty() ? getStr(item, "filename") : getStr(item, "songname");
-                String singer = getStr(item, "singername");
-                String album = getStr(item, "album_name");
-                String albumId = getStr(item, "album_id");
-                int duration = item.has("duration") && !item.get("duration").isJsonNull()
-                        ? item.get("duration").getAsInt() : 0;
+                String name = firstNonEmpty(
+                        getStr(item, "OriSongName"),
+                        getStr(item, "songname"),
+                        getStr(item, "SongName"),
+                        getStr(item, "song_name"),
+                        getStr(item, "FileName"),
+                        getStr(item, "filename"),
+                        getStr(item, "audio_name"));
+                // 若 name 还是空、FileName 是"歌手 - 歌名"格式,尝试提取
+                if (name.isEmpty()) {
+                    String fileName = getStr(item, "FileName");
+                    int sep = fileName.indexOf(" - ");
+                    if (sep > 0) name = fileName.substring(sep + 3).trim();
+                    else if (!fileName.isEmpty()) name = fileName;
+                }
+                String singer = firstNonEmpty(
+                        getStr(item, "singername"),
+                        getStr(item, "SingerName"),
+                        getStr(item, "singer_name"),
+                        getStr(item, "author_name"),
+                        getStr(item, "artist_name"));
+                // 若 singer 空、FileName 是"歌手 - 歌名"格式,尝试提取
+                if (singer.isEmpty()) {
+                    String fileName = getStr(item, "FileName");
+                    int sep = fileName.indexOf(" - ");
+                    if (sep > 0) singer = fileName.substring(0, sep).trim();
+                }
+                String album = firstNonEmpty(
+                        getStr(item, "album_name"),
+                        getStr(item, "AlbumName"),
+                        getStr(item, "album"));
+                String albumId = firstNonEmpty(
+                        getStr(item, "AlbumID"),
+                        getStr(item, "album_id"),
+                        getStr(item, "album_audio_id"));
+                int duration = parseDuration(item);
 
-                if (name.isEmpty()) name = getStr(item, "filename");
-                if (singer.isEmpty()) singer = getStr(item, "author_name");
-
-                songs.add(new Song(id, name, singer, album, hash, albumId, duration));
+                if (!name.isEmpty() || !hash.isEmpty()) {
+                    songs.add(new Song(id, name, singer, album, hash, albumId, duration));
+                }
             }
+            KuGouLogger.info("[NetMusicKuGou] parseSearchResult parsed {} songs", songs.size());
             return songs;
-        } catch (JsonSyntaxException e) {
-            KuGouLogger.warn("[NetMusicKuGou] Parse search result failed: {}", e.getMessage());
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] Parse search result failed: {}", e.toString(), e);
             return Collections.emptyList();
         }
+    }
+
+    /** 返回第一个非空字符串 */
+    private static String firstNonEmpty(String... candidates) {
+        for (String s : candidates) {
+            if (s != null && !s.isEmpty()) return s;
+        }
+        return "";
+    }
+
+    /** 解析时长字段(duration / timelength / timeLength / Duration),单位秒 */
+    private static int parseDuration(JsonObject item) {
+        String[] fields = {"duration", "timelength", "timeLength", "Duration", "time"};
+        for (String f : fields) {
+            if (item.has(f) && !item.get(f).isJsonNull()) {
+                try {
+                    int v = item.get(f).getAsInt();
+                    // timelength 某些字段是毫秒, mobilecdn 的 duration 是秒,这里统一到秒
+                    // 简单启发:大于 100000 视为毫秒
+                    if (v > 100000) v = Math.round(v / 1000f);
+                    return v;
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return 0;
     }
 
     // ==================== 获取歌曲 URL ====================
 
     /**
-     * 音质降级链（从高到低）。与 AudioQuality 枚举对应，顺序很关键。
-     * 必须是 AudioQuality 中能实际映射到酷狗协议 quality 字段的成员。
+     * 音质等级表（从低到高）。对齐 EchoMusic song.ts AUDIO_QUALITY_ORDER:
+     * ['128','320','flac','high','super']
      */
-    private static final AudioQuality[] QUALITY_LADDER = new AudioQuality[]{
-            AudioQuality.SUPER_DSD,   // "super"
-            AudioQuality.SQ_FLAC,     // "flac"
-            AudioQuality.HIGH,        // "high"
-            AudioQuality.HQ,          // "320"
-            AudioQuality.STANDARD     // "128"
+    private static final AudioQuality[] QUALITY_ORDER_ASC = new AudioQuality[]{
+            AudioQuality.STANDARD,    // 0 "128"
+            AudioQuality.HQ,          // 1 "320"
+            AudioQuality.SQ_FLAC,     // 2 "flac"
+            AudioQuality.HIGH,        // 3 "high"
+            AudioQuality.SUPER_DSD    // 4 "super"
     };
 
     /**
-     * 给定用户请求的音质，返回从该音质往下一直到 128 的降级数组。
-     * 如果传入 null，默认从 HQ 开始。
+     * 给定用户请求的音质,返回 从该音质起按 高→低 降级的数组(相当于 EchoMusic slice(0,index+1).reverse)。
+     * 例:quality=super → [super,high,flac,320,128]
+     *    quality=high  → [high,flac,320,128]
+     *    null         → [320,128]（默认从 HQ 开始,但兼容模式会把音质传成 null 用原 hash 直接兜底）
      */
     private static AudioQuality[] getQualityFallbackOrder(AudioQuality requested) {
-        int startIdx = QUALITY_LADDER.length - 1;  // 默认到 STANDARD
+        // 找 requested 在 ASC 表中的位置
+        int idx = 1; // 默认 HQ (index=1),对应 EchoMusic 原代码 default=128,但对模组免费用户更合理的是 HQ
         if (requested != null) {
-            for (int i = 0; i < QUALITY_LADDER.length; i++) {
-                if (QUALITY_LADDER[i] == requested) {
-                    startIdx = i;
-                    break;
-                }
+            for (int i = 0; i < QUALITY_ORDER_ASC.length; i++) {
+                if (QUALITY_ORDER_ASC[i] == requested) { idx = i; break; }
             }
         }
-        AudioQuality[] result = new AudioQuality[startIdx + 1];
-        System.arraycopy(QUALITY_LADDER, 0, result, 0, startIdx + 1);
-        return result;
+        // 切 0..idx 并逆序 → 高→低
+        AudioQuality[] asc = new AudioQuality[idx + 1];
+        System.arraycopy(QUALITY_ORDER_ASC, 0, asc, 0, idx + 1);
+        AudioQuality[] desc = new AudioQuality[asc.length];
+        for (int i = 0; i < asc.length; i++) desc[i] = asc[asc.length - 1 - i];
+        KuGouLogger.info("[NetMusicKuGou] quality ladder for {} → {}",
+                requested == null ? "null" : requested.getValue(),
+                java.util.Arrays.stream(desc).map(q -> q.getValue()).toList());
+        return desc;
     }
 
     /**
@@ -189,38 +442,335 @@ public final class KuGouApiClient {
     /**
      * 获取歌曲播放 URL（指定音质）
      * <p>
-     * 自动降级策略：从用户选定的音质开始，按 super → flac → high → 320 → 128 的顺序逐级尝试。
-     * 每个音质依次走公开 API → v5/url。如果所有音质都拿不到，最后兜底走 v3/yiting（不带 quality，由服务端决定）。
+     * 完整流程(与 EchoMusic resolver.ts 对齐):
+     *   0. POST /v2/get_res_privilege/lite 拉取 relateGoods[](含各音质独立 hash + level/quality 标记)
+     *   1. 音质降级链: 对每个音质优先找 relateGoods 匹配项 → 用 matched.hash(非原始 hash)
+     *        请求 v5/url, 并把 albumId/album_audio_id 一并传入。找不到匹配时用原始 hash 兜底。
+     *   2. 兼容性模式 fallback: 不带 quality 直接用原始 hash 调 v5/url
+     *   3. yiting → magic ppage_id → v6/priv_url 逐级兜底
      */
     public static CompletableFuture<String> getSongUrl(String hash, String albumId, AudioQuality quality) {
         return CompletableFuture.supplyAsync(() -> {
+            long t0 = System.currentTimeMillis();
+            final String lowerHash = hash.toLowerCase();
+            final long albumIdL = parseAlbumId(albumId);
+
+            // 步骤 0: 拉取 relateGoods (失败时返回空列表,不阻塞后续流程)
+            KuGouLogger.info("[NetMusicKuGou] getSongUrl start: hash={}, albumId={}, quality={}",
+                    lowerHash, albumId, quality == null ? "null" : quality.getValue());
+            List<RelateGood> relateGoods = Collections.emptyList();
+            try {
+                relateGoods = fetchSongPrivilegeLite(lowerHash, albumId);
+                KuGouLogger.info("[NetMusicKuGou] relateGoods count={}, items={}",
+                        relateGoods.size(), relateGoods);
+            } catch (Exception e) {
+                KuGouLogger.warn("[NetMusicKuGou] privilege_lite failed, proceed without: {}", e.toString());
+            }
+
             AudioQuality[] ladder = getQualityFallbackOrder(quality);
 
-            // 步骤 1: 按降级链依次尝试 public + v5/url
+            // 步骤 1: 音质降级链 (EchoMusic resolver.ts L192-207)
+            //   对 candidates 中每个音质:
+            //     A. 如果 relateGoods 有匹配 → 先 [matched.hash + album_id=0](这是 EchoMusic 实际传参风格),
+            //        失败再 [matched.hash + album_id=albumIdL],都失败再走 fallback。
+            //     B. 没匹配 → 公开 API → [originalHash + albumIdL]
             for (int i = 0; i < ladder.length; i++) {
                 AudioQuality q = ladder[i];
                 boolean isLastInLadder = (i == ladder.length - 1);
 
-                String url = fetchPublicSongUrl(hash, q);
-                if (!url.isEmpty()) {
-                    return url;
+                String url = "";
+                RelateGood matched = matchRelateGoodForQuality(relateGoods, q);
+                if (matched != null && matched.hash != null && !matched.hash.isEmpty()) {
+                    KuGouLogger.info(
+                            "[NetMusicKuGou] Quality {} matched relateGood: hash={}, q={}, level={} (original hash={})",
+                            q.getValue(), matched.hash, matched.quality, matched.level, lowerHash);
+                    // A1: EchoMusic 真实调用风格:传 relateGood hash + 对应 quality,不传 album_id(=0)
+                    url = fetchAuthenticatedSongUrl(matched.hash, q, 0L);
+                    // A2: 再试 albumIdL
+                    if (url.isEmpty() && albumIdL != 0) {
+                        url = fetchAuthenticatedSongUrl(matched.hash, q, albumIdL);
+                    }
+                }
+                // 1a) relateGoods 匹配不到或两轮都失败, 退回到公开 API + 原 hash
+                if (url.isEmpty()) {
+                    url = fetchPublicSongUrl(lowerHash, q);
+                }
+                // 1b) 仍没有, 用原始 hash + album_id 再试一次 v5/url
+                if (url.isEmpty()) {
+                    url = fetchAuthenticatedSongUrl(lowerHash, q, albumIdL);
                 }
 
-                url = fetchAuthenticatedSongUrl(hash, q);
                 if (!url.isEmpty()) {
+                    KuGouLogger.info("[NetMusicKuGou] URL resolved in {}ms via quality={}",
+                            System.currentTimeMillis() - t0, q.getValue());
                     return url;
                 }
 
                 if (!isLastInLadder) {
                     KuGouLogger.info("[NetMusicKuGou] Quality {} unavailable for hash={}, falling back to {}",
-                            q.getValue(), hash, ladder[i + 1].getValue());
+                            q.getValue(), lowerHash, ladder[i + 1].getValue());
                 }
             }
 
-            // 步骤 2: 最后兜底 v3/yiting（不带 quality，让服务端自己挑）
-            KuGouLogger.warn("[NetMusicKuGou] All qualities exhausted for hash={}, trying gateway v3", hash);
-            return fetchGatewaySongUrl(hash);
+            // 步骤 2: 兼容模式(不带 quality,让服务端自己挑)对应 EchoMusic resolver.ts L209-224
+            KuGouLogger.warn("[NetMusicKuGou] All qualities exhausted for hash={}, trying compat (no quality)", lowerHash);
+            String compatUrl = fetchAuthenticatedSongUrl(lowerHash, null, albumIdL);
+            if (!compatUrl.isEmpty()) return compatUrl;
+
+            // 步骤 3: 最后兜底 v3/yiting
+            KuGouLogger.warn("[NetMusicKuGou] Compat fallback empty for hash={}, trying gateway v3", lowerHash);
+            String yitingUrl = fetchGatewaySongUrl(lowerHash);
+            if (!yitingUrl.isEmpty()) return yitingUrl;
+
+            // 步骤 4: 魔法 ppage_id 兜底(EchoMusic resolver.ts L226-239 getSongUrl(hash, '', 356753938))
+            KuGouLogger.warn("[NetMusicKuGou] yiting empty for hash={}, trying magic ppage_id", lowerHash);
+            String magicUrl = fetchMagicPpageUrl(lowerHash, albumIdL);
+            if (!magicUrl.isEmpty()) {
+                KuGouLogger.info("[NetMusicKuGou] URL final (magic ppage_id) in {}ms: len={}, prefix={}",
+                        System.currentTimeMillis() - t0,
+                        magicUrl.length(),
+                        magicUrl.length() < 64 ? magicUrl : magicUrl.substring(0, 64) + "...");
+                return magicUrl;
+            }
+
+            // 步骤 5: v6/priv_url POST 兜底(EchoMusic song_url_new.js)
+            KuGouLogger.warn("[NetMusicKuGou] magic ppage_id empty for hash={}, trying v6/priv_url", lowerHash);
+            String v6Url = fetchV6PrivUrl(lowerHash, albumIdL);
+            if (!v6Url.isEmpty()) {
+                KuGouLogger.info("[NetMusicKuGou] URL final (v6/priv_url) in {}ms: len={}, prefix={}",
+                        System.currentTimeMillis() - t0,
+                        v6Url.length(),
+                        v6Url.length() < 64 ? v6Url : v6Url.substring(0, 64) + "...");
+                return v6Url;
+            }
+
+            KuGouLogger.warn("[NetMusicKuGou] ALL fallbacks exhausted for hash={}, returning empty URL after {}ms",
+                    lowerHash, System.currentTimeMillis() - t0);
+            return "";
         });
+    }
+
+    /** 解析 albumId 为 long, 非数字时返回 0 */
+    private static long parseAlbumId(String albumId) {
+        if (albumId == null || albumId.isEmpty()) return 0;
+        try { return Long.parseLong(albumId.trim()); } catch (NumberFormatException e) { return 0; }
+    }
+
+    /** privilege_lite 返回的 relate_goods 条目:每个音质一个独立 hash */
+    public static final class RelateGood {
+        public final String hash;
+        public final String quality; // 如 "128"/"320"/"flac"/"sq"/"hires"/"high"/"dsd"/"super"
+        public final int level;      // 1..7, 1=128, 2=320, 5=flac/sq, 6=high/hires, 7=super/dsd
+
+        public RelateGood(String hash, String quality, int level) {
+            this.hash = hash;
+            this.quality = quality;
+            this.level = level;
+        }
+
+        @Override
+        public String toString() {
+            return "{" + level + "/" + quality + "@" + (hash == null ? "?" : hash.substring(0, Math.min(8, hash.length()))) + "...}";
+        }
+    }
+
+    /** 按音质匹配 relateGoods (对齐 EchoMusic doesRelateGoodMatchQuality song.ts L152) */
+    private static RelateGood matchRelateGoodForQuality(List<RelateGood> goods, AudioQuality q) {
+        if (goods == null || goods.isEmpty()) return null;
+        String qv = q == null ? "128" : q.getValue();
+        // 128 音质: 任何 relateGoods 都可用, 优先找显式标记的 128
+        if ("128".equals(qv)) {
+            for (RelateGood g : goods) {
+                if (g == null || g.hash == null || g.hash.isEmpty()) continue;
+                String normQ = (g.quality == null ? "" : g.quality).trim().toLowerCase();
+                if ("128".equals(normQ) || "standard".equals(normQ) || g.level == 1 || g.level == 2 || g.level == 0) {
+                    return g;
+                }
+            }
+            // 退而求其次: 第一个有 hash 的
+            for (RelateGood g : goods) {
+                if (g != null && g.hash != null && !g.hash.isEmpty()) return g;
+            }
+            return null;
+        }
+        for (RelateGood g : goods) {
+            if (g == null || g.hash == null || g.hash.isEmpty()) continue;
+            String normQ = (g.quality == null ? "" : g.quality).trim().toLowerCase();
+            boolean hit = false;
+            switch (qv) {
+                case "320":
+                    hit = "320".equals(normQ) || "hq".equals(normQ) || g.level == 4; break;
+                case "flac":
+                    hit = "flac".equals(normQ) || "sq".equals(normQ) || g.level == 5; break;
+                case "high":
+                    hit = "high".equals(normQ) || "hires".equals(normQ) || "hi-res".equals(normQ) || "res".equals(normQ) || g.level == 6; break;
+                case "super":
+                    hit = "super".equals(normQ) || "dsd".equals(normQ) || g.level == 7; break;
+                default: break;
+            }
+            if (hit) return g;
+        }
+        return null;
+    }
+
+    /**
+     * 对应 EchoMusic privilege_lite.js: POST /v2/get_res_privilege/lite (x-router: media.store.kugou.com)
+     * <p>
+     * 请求体: { appid, area_code, behavior, clientver, need_hash_offset, relate, support_verify,
+     *          resource:[{type:"audio", page_id:0, hash, album_id}], qualities:[...] }
+     * <p>
+     * 返回: data[0].relate_goods = [{hash, quality, level}, ...]  每音质独立 hash
+     */
+    private static List<RelateGood> fetchSongPrivilegeLite(String hash, String albumId) throws IOException {
+        String dfid = KuGouConfig.dfid;
+        if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) return Collections.emptyList();
+
+        String mid = KuGouConfig.mid != null ? KuGouConfig.mid : "";
+        String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
+        int cltime = (int) (System.currentTimeMillis() / 1000);
+
+        // 1. 组装 query params(因为走 gateway,需要在 URL 上带 appid/clientver/dfid 等默认参数, 再加 signature)
+        Map<String, Object> queryParams = new LinkedHashMap<>();
+        queryParams.put("dfid", dfid);
+        queryParams.put("mid", mid);
+        queryParams.put("uuid", "-");
+        queryParams.put("appid", "3116");
+        queryParams.put("clientver", 11440);
+        queryParams.put("clienttime", String.valueOf(cltime));
+        if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) queryParams.put("token", KuGouConfig.token);
+        if (!"0".equals(userid) && !userid.isEmpty()) queryParams.put("userid", userid);
+
+        // URL 级 Android 签名
+        queryParams.put("signature", KuGouSignature.signatureAndroidParams(queryParams, ""));
+
+        // 2. body(JSON) 按 privilege_lite.js
+        JsonObject body = new JsonObject();
+        body.addProperty("appid", "3116");
+        body.addProperty("area_code", 1);
+        body.addProperty("behavior", "play");
+        body.addProperty("clientver", 11440);
+        body.addProperty("need_hash_offset", 1);
+        body.addProperty("relate", 1);
+        body.addProperty("support_verify", 1);
+        JsonArray qualities = new JsonArray();
+        for (String q : new String[]{"128", "320", "flac", "high", "viper_atmos", "viper_tape", "viper_clear", "super", "multitrack"}) {
+            qualities.add(q);
+        }
+        body.add("qualities", qualities);
+
+        JsonArray resource = new JsonArray();
+        JsonObject resItem = new JsonObject();
+        resItem.addProperty("type", "audio");
+        resItem.addProperty("page_id", 0);
+        resItem.addProperty("hash", hash.toLowerCase());
+        long albumIdL = parseAlbumId(albumId);
+        resItem.addProperty("album_id", albumIdL);
+        resource.add(resItem);
+        body.add("resource", resource);
+
+        String jsonBody = GSON.toJson(body);
+
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
+        headers.put("x-router", "media.store.kugou.com");
+        headers.put("Content-Type", "application/json");
+        headers.put("dfid", dfid);
+        headers.put("mid", mid);
+        headers.put("clienttime", String.valueOf(cltime));
+        headers.put("kg-rc", "1");
+        headers.put("kg-thash", "5d816a0");
+        headers.put("kg-rec", "1");
+        headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
+
+        StringBuilder cookieSb = new StringBuilder();
+        if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+            cookieSb.append("token=").append(KuGouConfig.token).append("; ");
+        }
+        if (!"0".equals(userid) && !userid.isEmpty()) {
+            cookieSb.append("userid=").append(userid).append("; ");
+        }
+        for (var entry : KuGouConfig.cookies.entrySet()) {
+            cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
+        }
+        String cookieStr = cookieSb.toString().trim();
+        if (!cookieStr.isEmpty()) headers.put("Cookie", cookieStr);
+
+        HttpUtils.HttpResponse response = HttpUtils.postRaw(
+                "https://gateway.kugou.com/v2/get_res_privilege/lite",
+                headers, queryParams, jsonBody);
+        KuGouLogger.info("[NetMusicKuGou] privilege_lite HTTP {} bodyLen={}",
+                response.statusCode, response.body == null ? 0 : response.body.length());
+
+        if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // 预览
+        String preview = response.body.length() < 600 ? response.body : response.body.substring(0, 600) + "...";
+        KuGouLogger.info("[NetMusicKuGou] privilege_lite resp preview: {}", preview);
+        return parseRelateGoods(response.body);
+    }
+
+    /** 从 privilege_lite 响应中解析 relate_goods 数组 */
+    private static List<RelateGood> parseRelateGoods(String jsonStr) {
+        List<RelateGood> out = new ArrayList<>();
+        try {
+            JsonObject root = GSON.fromJson(jsonStr, JsonObject.class);
+            if (root == null) return out;
+            int ec = root.has("error_code") ? root.get("error_code").getAsInt() :
+                    (root.has("err_code") ? root.get("err_code").getAsInt() : 0);
+            int st = root.has("status") ? root.get("status").getAsInt() : -1;
+            if (ec != 0 && !(st == 1 || st == 200)) {
+                KuGouLogger.warn("[NetMusicKuGou] privilege_lite not success: error_code={}, status={}", ec, st);
+                return out;
+            }
+
+            // data 可能是数组 [{resource+relate_goods}] 或对象包含 data
+            JsonArray dataArr = null;
+            if (root.has("data")) {
+                JsonElement d = root.get("data");
+                if (d.isJsonArray()) dataArr = d.getAsJsonArray();
+                else if (d.isJsonObject()) {
+                    // 某些响应包在 data.data / data.list
+                    if (d.getAsJsonObject().has("data") && d.getAsJsonObject().get("data").isJsonArray()) {
+                        dataArr = d.getAsJsonObject().getAsJsonArray("data");
+                    } else if (d.getAsJsonObject().has("list") && d.getAsJsonObject().get("list").isJsonArray()) {
+                        dataArr = d.getAsJsonObject().getAsJsonArray("list");
+                    }
+                }
+            }
+            if (dataArr == null) return out;
+
+            for (JsonElement e : dataArr) {
+                if (!e.isJsonObject()) continue;
+                JsonObject item = e.getAsJsonObject();
+                JsonArray goodsArr = null;
+                if (item.has("relate_goods") && item.get("relate_goods").isJsonArray()) {
+                    goodsArr = item.getAsJsonArray("relate_goods");
+                } else if (item.has("relateGoods") && item.get("relateGoods").isJsonArray()) {
+                    goodsArr = item.getAsJsonArray("relateGoods");
+                }
+                if (goodsArr == null) continue;
+                for (JsonElement ge : goodsArr) {
+                    if (!ge.isJsonObject()) continue;
+                    JsonObject g = ge.getAsJsonObject();
+                    String h = firstNonEmpty(
+                            getStr(g, "hash"),
+                            getStr(g, "Hash"),
+                            getStr(g, "file_hash"));
+                    if (h == null || h.isEmpty()) continue;
+                    String q = firstNonEmpty(
+                            getStr(g, "quality"),
+                            getStr(g, "Quality"),
+                            getStr(g, "name"));
+                    int lvl = g.has("level") ? g.get("level").getAsInt() : 0;
+                    if (lvl == 0 && g.has("Level")) lvl = g.get("Level").getAsInt();
+                    out.add(new RelateGood(h, q, lvl));
+                }
+            }
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] parseRelateGoods exception: {}", e.toString());
+        }
+        return out;
     }
 
     /**
@@ -253,9 +803,15 @@ public final class KuGouApiClient {
 
     /**
      * 方式2: trackercdn /v5/url 接口（KuGou官方使用的VIP歌曲接口）
-     * 必须携带 dfid + 完整参数 + key签名 + signature，否则返回"err signature"（error_code 20006）
+     * <p>
+     * ⚠️ 严格对齐 EchoMusic server/module/song_url.js (L15-L51):
+     *   - encryptKey=true: 只加 key 字段（MD5(hash+57ae12eb+appid+mid+userid)）
+     *   - notSign=true:  不要 signature 字段！（加了反而触发 31833 版权校验）
+     *   - version/clientver = 11430（与 song_url.js L26/L39 硬编码一致，不是 11440）
+     *   - GET 请求, x-router=trackercdn.kugou.com
+     *   - Lite 配套: page_id=967177915, pid=411, ppage_id=356753938,823673182,967485191
      */
-    private static String fetchAuthenticatedSongUrl(String hash, AudioQuality quality) {
+    private static String fetchAuthenticatedSongUrl(String hash, AudioQuality quality, long albumId) {
         try {
             String dfid = KuGouConfig.dfid;
             if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) {
@@ -266,35 +822,35 @@ public final class KuGouApiClient {
             int cltime = (int) (System.currentTimeMillis() / 1000);
             String mid = KuGouConfig.mid != null ? KuGouConfig.mid : "";
             String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
-            // ⚠️ 必须与 VIP 查询（getVipInfo）保持一致：概念版 = Lite 凭证
-            // 对应 KuGou config.json: liteAppid=3116, liteClientver=11440
             String appid = "3116";
-            int clientver = 11440;
+            // EchoMusic song_url.js L26/L39 硬编码 clientver=11430 / version=11430 (不是 11440)
+            final int clientver = 11430;
 
             // 音质映射：与KuGou保持一致
-            String qualityStr = (quality != null) ? quality.getValue() : "320";
-            // 特效音质前缀处理（piano/dj/acappella等）
+            String qualityStr = (quality != null) ? quality.getValue() : "128";
             if (!qualityStr.equals("128") && !qualityStr.equals("320") &&
                 !qualityStr.equals("flac") && !qualityStr.equals("high") && !qualityStr.equals("super")) {
                 qualityStr = "magic_" + qualityStr;
             }
 
-            // 构建完整参数列表（与KuGou server/module/song_url.js 一致）
             Map<String, Object> params = new LinkedHashMap<>();
-            params.put("album_id", 0);
+            // 注意: EchoMusic resolver.ts 调 getSongUrl(matched.hash, quality) 时没传 album_id,
+            // 因此服务端 params.album_id 为 0。传入真实 albumId 时也可能触发版权匹配失败。
+            // 两种策略都试一次: 先 0, 再 albumId。这里 albumId 直接用传入值,外层循环负责两种尝试。
+            params.put("album_id", albumId);
             params.put("area_code", 1);
             params.put("hash", hash.toLowerCase());
             params.put("ssa_flag", "is_fromtrack");
             params.put("version", clientver);
-            params.put("page_id", 151369488);
+            params.put("page_id", 967177915);              // Lite 值
             params.put("quality", qualityStr);
-            params.put("album_audio_id", 0);
+            params.put("album_audio_id", albumId);
             params.put("behavior", "play");
-            params.put("pid", 2);
+            params.put("pid", 411);                        // Lite pid
             params.put("cmd", 26);
             params.put("pidversion", 3001);
             params.put("IsFreePart", 0);
-            params.put("ppage_id", "463467626,350369493,788954147");
+            params.put("ppage_id", "356753938,823673182,967485191"); // Lite ppage_id
             params.put("cdnBackup", 1);
             params.put("module", "");
             params.put("clientver", clientver);
@@ -305,24 +861,20 @@ public final class KuGouApiClient {
             params.put("uuid", "-");
             params.put("appid", appid);
             params.put("clienttime", String.valueOf(cltime));
-            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
-                params.put("token", KuGouConfig.token);
-            }
-            if (userid != null && !userid.isEmpty() && !"0".equals(userid)) {
-                params.put("userid", userid);
-            }
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) params.put("token", KuGouConfig.token);
+            if (userid != null && !userid.isEmpty() && !"0".equals(userid)) params.put("userid", userid);
 
-            // signKey 签名（encryptKey: true）
-            // 来自 helper.js signKey(): MD5(hash + salt + appid + mid + userid)
-            // 非lite模式的salt = "57ae12eb6890223e355ccfcb74edf70d"
-            String signSalt = "57ae12eb6890223e355ccfcb74edf70d";
-            String key = CryptoUtils.md5(hash.toLowerCase() + signSalt + appid + mid + userid);
+            // encryptKey:true — 只加 key (Lite 平台 salt=185672dd,不是 57ae12eb)
+            // helper.js L70-73 signKey(hash,mid,userid,appid) = md5(hash + LITE_SALT + appid + mid + userid)
+            String liteSignSalt = "185672dd44712f60bb1736df5a377e82";
+            String key = CryptoUtils.md5(hash.toLowerCase() + liteSignSalt + appid + mid + userid);
             params.put("key", key);
-
-            // ⚠️ 关键：还要再算一个 signature 并加进 params，否则 gateway 会返回 error_code 20006 "err signature"
-            // 来自 helper.js signatureAndroidParams：MD5(ANDROID_SECRET + sortedKey=Value + data + ANDROID_SECRET)，data=""（GET 无 body）
-            // Lite 凭证配套的 salt = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+            // encryptType=android 且 song_url.js notSign:true — URL query 层 signature 用
+            // signatureAndroidParams(params, "") 即可;Lite salt = LnT6xpN3khm36zse0QzvmgTZ3waWdRSA
             params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
+
+            KuGouLogger.info("[NetMusicKuGou] v5/url try(hash={}, q={}, album_id={})",
+                    hash.substring(0, Math.min(8, hash.length())) + "...", qualityStr, albumId);
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
@@ -335,7 +887,6 @@ public final class KuGouApiClient {
             headers.put("kg-rec", "1");
             headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
 
-            // Cookie 用于 VIP 认证
             StringBuilder cookieSb = new StringBuilder();
             if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
                 cookieSb.append("token=").append(KuGouConfig.token).append("; ");
@@ -353,14 +904,15 @@ public final class KuGouApiClient {
                 cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
             }
             String cookieStr = cookieSb.toString().trim();
-            if (!cookieStr.isEmpty()) {
-                headers.put("Cookie", cookieStr);
-            }
+            if (!cookieStr.isEmpty()) headers.put("Cookie", cookieStr);
 
             HttpUtils.HttpResponse response = HttpUtils.get(
                     "https://gateway.kugou.com/v5/url", headers, params);
 
-            if (!response.isOk() || response.body.isEmpty()) return "";
+            if (!response.isOk() || response.body == null || response.body.isEmpty()) return "";
+            String prev = response.body.length() < 500 ? response.body : response.body.substring(0, 500) + "...";
+            KuGouLogger.info("[NetMusicKuGou] v5/url resp(hash={}): {}",
+                    hash.substring(0, Math.min(8, hash.length())) + "...", prev);
             return parseV5UrlResponse(response.body);
 
         } catch (Exception e) {
@@ -430,6 +982,260 @@ public final class KuGouApiClient {
     }
 
     /**
+     * 方式4: 魔法 ppage_id 兜底（对应 EchoMusic resolver.ts:227 getSongUrl(hash, '', 356753938)）
+     * <p>
+     * 当所有正规途径都失败时,使用单值魔法 ppage_id=356753938 绕过无版权限制。
+     * 该 ppage_id 是 Lite 平台的兜底值,EchoMusic 在所有音质和 yiting 都失败后作为最后兜底使用。
+     * 关键点:
+     *   - quality = "128" (最低音质,最易获取)
+     *   - ppage_id = "356753938" (单值,非逗号分隔列表)
+     *   - page_id = 967177915, pid = 411 (Lite 平台配套值)
+     */
+    private static String fetchMagicPpageUrl(String hash, long albumId) {
+        try {
+            String dfid = KuGouConfig.dfid;
+            if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) {
+                KuGouLogger.warn("[NetMusicKuGou] Magic ppage_id skipped: no dfid");
+                return "";
+            }
+
+            int cltime = (int) (System.currentTimeMillis() / 1000);
+            String mid = KuGouConfig.mid != null ? KuGouConfig.mid : "";
+            String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
+            String appid = "3116";
+            final int clientver = 11430; // EchoMusic song_url.js 硬编码版本号
+
+            Map<String, Object> params = new LinkedHashMap<>();
+            // EchoMusic resolver.ts 魔法兜底 getSongUrl(hash, '', 356753938) 同样没传 album_id,
+            // 所以先试 album_id=0,失败再试 albumId
+            params.put("album_id", 0L);
+            params.put("area_code", 1);
+            params.put("hash", hash.toLowerCase());
+            params.put("ssa_flag", "is_fromtrack");
+            params.put("version", clientver);
+            params.put("page_id", 967177915);              // Lite 值
+            params.put("quality", "128");                  // 最低音质,最易获取
+            params.put("album_audio_id", 0L);
+            params.put("behavior", "play");
+            params.put("pid", 411);                        // Lite pid
+            params.put("cmd", 26);
+            params.put("pidversion", 3001);
+            params.put("IsFreePart", 0);
+            params.put("ppage_id", "356753938");           // 单值魔法(不是逗号列表)
+            params.put("cdnBackup", 1);
+            params.put("module", "");
+            params.put("clientver", clientver);
+
+            // 基础认证参数
+            params.put("dfid", dfid);
+            params.put("mid", mid);
+            params.put("uuid", "-");
+            params.put("appid", appid);
+            params.put("clienttime", String.valueOf(cltime));
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) params.put("token", KuGouConfig.token);
+            if (userid != null && !userid.isEmpty() && !"0".equals(userid)) params.put("userid", userid);
+
+            // encryptKey:true — Lite 平台 salt=185672dd,不是 57ae12eb
+            String liteSignSalt = "185672dd44712f60bb1736df5a377e82";
+            params.put("key", CryptoUtils.md5(hash.toLowerCase() + liteSignSalt + appid + mid + userid));
+            // encryptType=android,notSign:true — signature 也要补(Lite salt)
+            params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
+
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
+            headers.put("x-router", "trackercdn.kugou.com");
+            headers.put("dfid", dfid);
+            headers.put("mid", mid);
+            headers.put("clienttime", String.valueOf(cltime));
+            headers.put("kg-rc", "1");
+            headers.put("kg-thash", "5d816a0");
+            headers.put("kg-rec", "1");
+            headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
+
+            // Cookie 用于 VIP 认证
+            StringBuilder cookieSb = new StringBuilder();
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+                cookieSb.append("token=").append(KuGouConfig.token).append("; ");
+            }
+            if (userid != null && !userid.isEmpty() && !"0".equals(userid)) {
+                cookieSb.append("userid=").append(userid).append("; ");
+            }
+            if (KuGouConfig.vipType != null && !KuGouConfig.vipType.isEmpty()) {
+                cookieSb.append("vip_type=").append(KuGouConfig.vipType).append("; ");
+            }
+            if (KuGouConfig.vipToken != null && !KuGouConfig.vipToken.isEmpty()) {
+                cookieSb.append("vip_token=").append(KuGouConfig.vipToken).append("; ");
+            }
+            for (var entry : KuGouConfig.cookies.entrySet()) {
+                cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
+            }
+            String cookieStr = cookieSb.toString().trim();
+            if (!cookieStr.isEmpty()) {
+                headers.put("Cookie", cookieStr);
+            }
+
+            HttpUtils.HttpResponse response = HttpUtils.get(
+                    "https://gateway.kugou.com/v5/url", headers, params);
+            String body = (response.isOk() && response.body != null) ? response.body : "";
+            String url = body.isEmpty() ? "" : parseV5UrlResponse(body);
+
+            // album_id=0 失败时再试真实 albumId(有的场景需要传真实 albumId 才放行)
+            if (url.isEmpty() && albumId != 0) {
+                KuGouLogger.info("[NetMusicKuGou] Magic ppage_id album_id=0 failed, retry album_id={}", albumId);
+                Map<String, Object> params2 = new LinkedHashMap<>(params);
+                params2.put("album_id", albumId);
+                params2.put("album_audio_id", albumId);
+                // key 签名只有 hash+signSalt+appid+mid+userid,不依赖 album_id,可直接复用
+                HttpUtils.HttpResponse r2 = HttpUtils.get("https://gateway.kugou.com/v5/url", headers, params2);
+                String b2 = (r2.isOk() && r2.body != null) ? r2.body : "";
+                if (!b2.isEmpty()) url = parseV5UrlResponse(b2);
+            }
+            return url;
+
+        } catch (Exception e) {
+            KuGouLogger.error("[NetMusicKuGou] Magic ppage_id API exception: {}", e.getMessage(), e);
+            return "";
+        }
+    }
+
+    /**
+     * 方式5: v6/priv_url 兜底(对应 EchoMusic song_url_new.js)
+     * <p>
+     * - POST JSON body 结构: {area_code, behavior, qualities, resource{...}, token, tracker_param{key,priv_vip_type=6,...}, userid, vip}
+     * - tracker_param.key 使用 v6 专属 salt="185672dd44712f60bb1736df5a377e82"(与 v5/url 的 57ae... 不同)
+     * - URL query 层照常挂默认参数 + signatureAndroidParams(queryParams, data=bodyJSON) (encryptType=android)
+     */
+    private static String fetchV6PrivUrl(String hash, long albumId) {
+        try {
+            String dfid = KuGouConfig.dfid;
+            if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) return "";
+
+            int cltime = (int) (System.currentTimeMillis() / 1000);
+            long clienttimeMs = System.currentTimeMillis();
+            String mid = KuGouConfig.mid != null ? KuGouConfig.mid : "";
+            String useridStr = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
+            long userid;
+            try { userid = Long.parseLong(useridStr); } catch (NumberFormatException e) { userid = 0; }
+            String appid = "3116";
+            int clientver = 11440;
+            String lowerHash = hash.toLowerCase();
+            String token = KuGouConfig.token != null ? KuGouConfig.token : "";
+            String vipToken = KuGouConfig.vipToken != null ? KuGouConfig.vipToken : "";
+            String vipType = KuGouConfig.vipType != null ? KuGouConfig.vipType : "0";
+
+            // 1. 组装 POST body(dataMap),严格对齐 EchoMusic song_url_new.js L14-44 的真实写法
+            //    注意字段类型:
+            //     - area_code: "1" (字符串),不是 1 数字
+            //     - resource.collect_list_id: "3" (字符串)
+            //     - tracker_param.pid: "411", pidversion: "3001", priv_vip_type: "6" (全字符串)
+            //     - tracker_param.auth: "", open_time: "" (空字符串保留,不能删)
+            //     - vip: 直接用 vipType(来自 cookie,字符串或数字都接受,不要强转数字)
+            JsonObject body = new JsonObject();
+            body.addProperty("area_code", "1");
+            body.addProperty("behavior", "play");
+
+            JsonArray qualities = new JsonArray();
+            for (String q : new String[]{"128", "320", "flac", "high", "multitrack", "viper_atmos", "viper_tape", "viper_clear", "super"})
+                qualities.add(q);
+            body.add("qualities", qualities);
+
+            JsonObject resource = new JsonObject();
+            resource.addProperty("album_audio_id", albumId);
+            resource.addProperty("collect_list_id", "3");
+            resource.addProperty("collect_time", clienttimeMs);
+            resource.addProperty("hash", lowerHash);
+            resource.addProperty("id", 0);
+            resource.addProperty("page_id", 1);
+            resource.addProperty("type", "audio");
+            body.add("resource", resource);
+
+            body.addProperty("token", token);  // 即使空也要传(EchoMusic song_url_new.js L27 无条件加)
+
+            // tracker_param.key: cryptoMd5(hash + "185672dd44712f60bb1736df5a377e82" + appid + mid + userid)
+            String v6KeySalt = "185672dd44712f60bb1736df5a377e82";
+            String trackerKey = CryptoUtils.md5(lowerHash + v6KeySalt + appid + mid + userid);
+            JsonObject trackerParam = new JsonObject();
+            trackerParam.addProperty("all_m", 1);
+            trackerParam.addProperty("auth", "");   // ⚠️ 必须保留空字符串(不能删!)song_url_new.js L30
+            trackerParam.addProperty("is_free_part", 0);
+            trackerParam.addProperty("key", trackerKey);
+            trackerParam.addProperty("module_id", 0);
+            trackerParam.addProperty("need_climax", 1);
+            trackerParam.addProperty("need_xcdn", 1);
+            trackerParam.addProperty("open_time", ""); // ⚠️ 必须保留空字符串 song_url_new.js L36
+            trackerParam.addProperty("pid", "411");     // 字符串,不是数字
+            trackerParam.addProperty("pidversion", "3001"); // 字符串
+            trackerParam.addProperty("priv_vip_type", "6"); // 字符串
+            trackerParam.addProperty("viptoken", vipToken);  // 空也要传 song_url_new.js L40
+            body.add("tracker_param", trackerParam);
+
+            body.addProperty("userid", String.valueOf(userid));
+            // vip: 直接用 vipType(来自 cookie,字符串 或 "0"/数字),不要强转
+            body.addProperty("vip", vipType == null || vipType.isEmpty() ? "0" : vipType);
+
+            String bodyJson = GSON.toJson(body);
+            KuGouLogger.info("[NetMusicKuGou] v6/priv_url POST body(len={}): {}", bodyJson.length(),
+                    bodyJson.length() < 800 ? bodyJson : bodyJson.substring(0, 800) + "...");
+
+            // 2. URL query 层默认参数(encryptType=android 风格),signature = signatureAndroidParams(queryParams, bodyJson)
+            Map<String, Object> queryParams = new LinkedHashMap<>();
+            queryParams.put("dfid", dfid);
+            queryParams.put("mid", mid);
+            queryParams.put("uuid", "-");
+            queryParams.put("appid", appid);
+            queryParams.put("clientver", clientver);
+            queryParams.put("clienttime", String.valueOf(cltime));
+            if (!token.isEmpty()) queryParams.put("token", token);
+            if (userid != 0) queryParams.put("userid", String.valueOf(userid));
+            // Lite 模式的 secret = LnT6xpN3khm36zse0QzvmgTZ3waWdRSA
+            queryParams.put("signature", KuGouSignature.signatureAndroidParams(queryParams, bodyJson));
+
+            // 3. headers + Cookie
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
+            headers.put("Content-Type", "application/json");
+            headers.put("dfid", dfid);
+            headers.put("mid", mid);
+            headers.put("clienttime", String.valueOf(cltime));
+            headers.put("kg-rc", "1");
+            headers.put("kg-thash", "5d816a0");
+            headers.put("kg-rec", "1");
+            headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
+
+            StringBuilder cookieSb = new StringBuilder();
+            cookieSb.append("dfid=").append(dfid).append("; ");
+            if (!token.isEmpty()) cookieSb.append("token=").append(token).append("; ");
+            if (userid != 0) cookieSb.append("userid=").append(userid).append("; ");
+            if (!"0".equals(vipType) && !vipType.isEmpty()) cookieSb.append("vip_type=").append(vipType).append("; ");
+            if (!vipToken.isEmpty()) cookieSb.append("vip_token=").append(vipToken).append("; ");
+            for (var entry : KuGouConfig.cookies.entrySet()) {
+                cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
+            }
+            headers.put("Cookie", cookieSb.toString().trim());
+
+            HttpUtils.HttpResponse response = HttpUtils.postRaw(
+                    "http://tracker.kugou.com/v6/priv_url",
+                    headers, queryParams, bodyJson);
+            KuGouLogger.info("[NetMusicKuGou] v6/priv_url HTTP {} bodyLen={}",
+                    response.statusCode, response.body == null ? 0 : response.body.length());
+            if (response.body != null && !response.body.isEmpty()) {
+                String prev = response.body.length() < 700 ? response.body : response.body.substring(0, 700) + "...";
+                KuGouLogger.info("[NetMusicKuGou] v6/priv_url resp preview: {}", prev);
+            }
+
+            if (!response.isOk() || response.body == null || response.body.isEmpty()) return "";
+            String url = parseV5UrlResponse(response.body);
+            KuGouLogger.info("[NetMusicKuGou] v6/priv_url parsed URL: len={}, prefix={}",
+                    url.length(),
+                    url.length() < 80 ? url : url.substring(0, 80) + "...");
+            return url;
+        } catch (Exception e) {
+            KuGouLogger.error("[NetMusicKuGou] v6/priv_url exception: {}", e.toString(), e);
+            return "";
+        }
+    }
+
+    /**
      * 解析 trackercdn /v5/url 响应
      * 返回格式: {"status":1,"url":"https://..."} 或带 data/info 嵌套结构
      */
@@ -440,24 +1246,32 @@ public final class KuGouApiClient {
 
             // 检查 status 或 error_code
             int status = root.has("status") ? root.get("status").getAsInt() : -1;
-            if (status == 0 || status == -1) {
-                // 可能有 error_code
-                if (root.has("error_code")) {
-                    int errCode = root.get("error_code").getAsInt();
-                    if (errCode != 0) {
-                        KuGouLogger.warn("[NetMusicKuGou] v5/url returned error_code={}", errCode);
-                        return "";
-                    }
-                }
+            int error_code = root.has("error_code") ? root.get("error_code").getAsInt() :
+                    (root.has("err_code") ? root.get("err_code").getAsInt() : -1);
+            boolean hasErr = (status == 0 || status == -1) && error_code > 0;
+            // 有的接口 status=200 但 error_code!=0,再检查
+            if (root.has("error_code") && error_code > 0 && status != 1) {
+                hasErr = true;
+            }
+            if (hasErr) {
+                String msg = firstNonEmpty(
+                        getStr(root, "error_msg"),
+                        getStr(root, "errmsg"),
+                        getStr(root, "message"),
+                        getStr(root, "info"));
+                String explain = KuGouErrorCode.explain(error_code);
+                KuGouLogger.warn("[NetMusicKuGou] v5/url error_code={} ({}), msg={}",
+                        error_code, explain, msg);
+                return "";
             }
 
-            // 递归解析 URL（与 KuGou resolveUrlFromResponse 逻辑一致）
+            // 递归解析 URL
             String url = resolveUrlRecursive(root);
             if (!url.isEmpty()) return url;
 
             return "";
-        } catch (JsonSyntaxException e) {
-            KuGouLogger.warn("[NetMusicKuGou] Parse v5/url response failed: {}", e.getMessage());
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] Parse v5/url response failed: {}", e.toString(), e);
             return "";
         }
     }
@@ -1060,32 +1874,54 @@ public final class KuGouApiClient {
     public static CompletableFuture<LyricCandidate> searchLyric(String hash, String keyword, int duration) {
         return CompletableFuture.supplyAsync(() -> {
             if (hash == null || hash.isEmpty() || keyword == null || keyword.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] searchLyric skipped: empty hash/keyword (hash={}, kw={})", hash, keyword);
                 return null;
             }
+            KuGouLogger.info("[NetMusicKuGou] searchLyric start: hash={}, keyword='{}', duration={}",
+                    hash, keyword, duration);
             try {
+                // EchoMusic server/module/search_lyric.js: /v1/search + appid/clientver（非公开 /search）
                 Map<String, Object> params = new LinkedHashMap<>();
+                params.put("album_audio_id", 0);
+                params.put("appid", "3116");
+                params.put("clientver", 11440);
+                params.put("duration", duration > 0 ? duration : 0);
                 params.put("hash", hash.toLowerCase());
-                params.put("keyword", keyword);
+                params.put("keywords", keyword);  // 注意是 keywords 复数（与 EchoMusic 一致）
                 params.put("lrctxt", 1);
-                // 注：duration 不是 KuGou 必传参数，省略可避免与少数短音频长度不一致时被过滤
-                if (duration > 0) {
-                    params.put("duration", duration);
-                }
+                params.put("man", "no");
 
                 Map<String, String> headers = new LinkedHashMap<>();
-                headers.put("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36");
+                headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
                 headers.put("Accept", "application/json, text/plain, */*");
 
-                // 注意：使用 http://lyrics.kugou.com/search（非 /v1/search，后者已失效返回空）
+                // 双轨：先试 /v1/search（EchoMusic 新版），失败回退到公开 /search
                 HttpUtils.HttpResponse response = HttpUtils.get(
-                        "http://lyrics.kugou.com/search", headers, params);
+                        "https://lyrics.kugou.com/v1/search", headers, params);
+                KuGouLogger.info("[NetMusicKuGou] searchLyric v1 HTTP {} bodyLen={}",
+                        response.statusCode, response.body == null ? 0 : response.body.length());
 
                 if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                    KuGouLogger.warn("[NetMusicKuGou] searchLyric v1 HTTP {} or empty, fallback to /search",
+                            response.statusCode);
+                    // 回退公开 /search（不带 appid/clientver，向下兼容）
+                    Map<String, Object> oldParams = new LinkedHashMap<>();
+                    oldParams.put("hash", hash.toLowerCase());
+                    oldParams.put("keyword", keyword);
+                    oldParams.put("lrctxt", 1);
+                    if (duration > 0) oldParams.put("duration", duration);
+                    response = HttpUtils.get("http://lyrics.kugou.com/search", headers, oldParams);
+                    KuGouLogger.info("[NetMusicKuGou] searchLyric fallback HTTP {} bodyLen={}",
+                            response.statusCode, response.body == null ? 0 : response.body.length());
+                }
+
+                if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                    KuGouLogger.warn("[NetMusicKuGou] searchLyric HTTP {} or empty body", response.statusCode);
                     return null;
                 }
                 return parseSearchLyricResult(response.body);
             } catch (Exception e) {
-                KuGouLogger.error("[NetMusicKuGou] search_lyric failed: {}", e.getMessage(), e);
+                KuGouLogger.error("[NetMusicKuGou] searchLyric exception: {}", e.toString(), e);
                 return null;
             }
         });
@@ -1093,14 +1929,36 @@ public final class KuGouApiClient {
 
     private static LyricCandidate parseSearchLyricResult(String jsonStr) {
         try {
+            if (jsonStr.length() < 800) {
+                KuGouLogger.info("[NetMusicKuGou] searchLyric resp preview: {}", jsonStr);
+            } else {
+                KuGouLogger.info("[NetMusicKuGou] searchLyric resp preview: {}", jsonStr.substring(0, 800) + "...");
+            }
             JsonObject root = GSON.fromJson(jsonStr, JsonObject.class);
             if (root == null) return null;
+
+            // v1/search: error_code=0 成功,status=200 也视为成功
+            // 旧 /search: status=200 成功;status=1 也兼容
+            boolean success = false;
+            if (root.has("error_code") && root.get("error_code").getAsInt() == 0) success = true;
             int status = root.has("status") ? root.get("status").getAsInt() : -1;
-            // /search 接口成功返回 200，/v1/search 返回 1（已失效）
-            if (status != 200 && status != 1) return null;
+            if (!success && (status == 200 || status == 1)) success = true;
+            if (!success) {
+                KuGouLogger.warn("[NetMusicKuGou] searchLyric not success: status={}, error_code={}",
+                        status, root.has("error_code") ? root.get("error_code").getAsInt() : -1);
+                return null;
+            }
 
             JsonArray candidates = root.has("candidates") ? root.getAsJsonArray("candidates") : null;
-            if (candidates == null || candidates.isEmpty()) return null;
+            // 某些路径返回在 data.candidates
+            if ((candidates == null || candidates.isEmpty()) && root.has("data") && root.get("data").isJsonObject()) {
+                JsonObject d = root.getAsJsonObject("data");
+                if (d.has("candidates")) candidates = d.getAsJsonArray("candidates");
+            }
+            if (candidates == null || candidates.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] searchLyric no candidates");
+                return null;
+            }
 
             // 取 score 最高的一项
             LyricCandidate best = null;
@@ -1108,21 +1966,27 @@ public final class KuGouApiClient {
                 if (!elem.isJsonObject()) continue;
                 JsonObject item = elem.getAsJsonObject();
                 String id = getStr(item, "id");
-                String accessKey = getStr(item, "accesskey");
+                String accessKey = firstNonEmpty(getStr(item, "accesskey"), getStr(item, "accessKey"), getStr(item, "access_key"));
                 if (id.isEmpty() || accessKey.isEmpty()) continue;
                 LyricCandidate c = new LyricCandidate(
                         id,
                         accessKey,
-                        getStr(item, "singer"),
-                        getStr(item, "song"),
-                        item.has("score") ? item.get("score").getAsInt() : 0);
+                        firstNonEmpty(getStr(item, "singer"), getStr(item, "SingerName"), getStr(item, "artist")),
+                        firstNonEmpty(getStr(item, "song"), getStr(item, "songname"), getStr(item, "SongName"), getStr(item, "title")),
+                        item.has("score") ? item.get("score").getAsInt() :
+                                (item.has("Score") ? item.get("Score").getAsInt() : 0));
                 if (best == null || c.score > best.score) {
                     best = c;
                 }
             }
+            KuGouLogger.info("[NetMusicKuGou] searchLyric best candidate: id={}, song='{}', singer='{}', score={}",
+                    best == null ? "null" : best.id,
+                    best == null ? "" : best.songName,
+                    best == null ? "" : best.singer,
+                    best == null ? 0 : best.score);
             return best;
-        } catch (JsonSyntaxException e) {
-            KuGouLogger.warn("[NetMusicKuGou] parse search_lyric failed: {}", e.getMessage());
+        } catch (Exception e) {
+            KuGouLogger.warn("[NetMusicKuGou] parse search_lyric exception: {}", e.toString(), e);
             return null;
         }
     }
@@ -1143,8 +2007,10 @@ public final class KuGouApiClient {
     public static CompletableFuture<LyricContent> getLyric(String id, String accessKey, String fmt) {
         return CompletableFuture.supplyAsync(() -> {
             if (id == null || id.isEmpty() || accessKey == null || accessKey.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] getLyric skipped: empty id/accessKey (id={}, ak={})", id, accessKey);
                 return null;
             }
+            KuGouLogger.info("[NetMusicKuGou] getLyric start: id={}, fmt={}", id, fmt);
             try {
                 String dfid = KuGouConfig.dfid;
                 if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) {
@@ -1167,6 +2033,7 @@ public final class KuGouApiClient {
                 params.put("id", id);
                 params.put("accesskey", accessKey);
                 params.put("fmt", fmt != null ? fmt : "lrc");
+                params.put("charset", "utf8");                 // EchoMusic lyric.js 必传
                 // 默认参数（与 /v5/url 一致）
                 params.put("dfid", dfid);
                 params.put("mid", mid);
@@ -1182,9 +2049,7 @@ public final class KuGouApiClient {
                 }
 
                 // Android 签名（GET，data 段为空）
-                String sigSalt = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
-                String signature = KuGouSignature.signatureAndroidParams(params, "");
-                params.put("signature", signature);
+                params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
 
                 // Headers
                 Map<String, String> headers = new LinkedHashMap<>();
@@ -1222,13 +2087,16 @@ public final class KuGouApiClient {
 
                 HttpUtils.HttpResponse response = HttpUtils.get(
                         "https://lyrics.kugou.com/download", headers, params);
+                KuGouLogger.info("[NetMusicKuGou] getLyric HTTP {} bodyLen={}",
+                        response.statusCode, response.body == null ? 0 : response.body.length());
 
                 if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                    KuGouLogger.warn("[NetMusicKuGou] getLyric HTTP {} or empty", response.statusCode);
                     return null;
                 }
                 return parseLyricDownloadResponse(response.body, fmt != null ? fmt : "lrc");
             } catch (Exception e) {
-                KuGouLogger.error("[NetMusicKuGou] getLyric failed: {}", e.getMessage(), e);
+                KuGouLogger.error("[NetMusicKuGou] getLyric exception: {}", e.toString(), e);
                 return null;
             }
         });
@@ -1236,11 +2104,24 @@ public final class KuGouApiClient {
 
     private static LyricContent parseLyricDownloadResponse(String jsonStr, String requestedFmt) {
         try {
+            // 响应预览（避免打印过长 base64 content 字段，先输出前 600 字符）
+            String preview = jsonStr.length() < 600 ? jsonStr : jsonStr.substring(0, 600) + "...";
+            KuGouLogger.info("[NetMusicKuGou] getLyric resp preview: {}", preview);
             JsonObject root = GSON.fromJson(jsonStr, JsonObject.class);
             if (root == null) return null;
+
             int status = root.has("status") ? root.get("status").getAsInt() : -1;
-            // /download 接口成功返回 200
-            if (status != 200 && status != 1) return null;
+            int errcode = root.has("error_code") ? root.get("error_code").getAsInt() :
+                    (root.has("err_code") ? root.get("err_code").getAsInt() : -1);
+            String errmsg = firstNonEmpty(getStr(root, "error_msg"), getStr(root, "errmsg"), getStr(root, "message"));
+            boolean success = false;
+            if (status == 200 || status == 1) success = true;
+            if (!success && errcode == 0) success = true;
+            if (!success) {
+                KuGouLogger.warn("[NetMusicKuGou] getLyric not success: status={}, error_code={}, errmsg={}",
+                        status, errcode, errmsg);
+                return null;
+            }
 
             String content = null;
             String fmt = requestedFmt;
