@@ -1,9 +1,9 @@
 package com.github.tartaricacid.netmusic.kugou.mixin;
 
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
-import com.github.tartaricacid.netmusic.kugou.NetMusicKuGou;
-import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
+import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.BurnDataCache;
+import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.inventory.CDBurnerMenu;
 import com.github.tartaricacid.netmusic.item.ItemMusicCD;
@@ -16,11 +16,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * 服务端 Mixin：在父模组 {@link CDBurnerMenu#setSongInfo} 刻录完成后，
- * 从 {@link BurnDataCache} 取出 fileHash/albumId，写入 CD NBT 并拉取歌词。
+ * 从 {@link BurnDataCache} 取出 fileHash/albumId/歌词，同步写入 CD NBT。
  * <p>
- * 数据来源：客户端 {@code CDBurnerMenuScreenMixin.handleCraftButton()} 在发
- * {@code SetMusicIDMessage} 前把 hash 写入 {@link BurnDataCache}。
- * 集成服务器模式下客户端/服务端共享 JVM，静态变量可直接传递。
+ * 歌词由客户端在刻录时并行拉取，通过 BurnDataCache 传递到服务端，
+ * 刻录完成时 CD 上已带有歌词，播放时无需等待。
  */
 @Mixin(value = CDBurnerMenu.class, remap = false)
 public class CDBurnerMenuMixin {
@@ -30,12 +29,13 @@ public class CDBurnerMenuMixin {
         try {
             String[] data = BurnDataCache.take();
             if (data == null || data[0] == null || data[0].isEmpty()) {
-                return; // 不是酷狗刻录（网易云路径不经过缓存）
+                return;
             }
             String fileHash = data[0];
             String albumId = data[1];
+            String lrc = data[2];
+            String lrcTrans = data[3];
 
-            // 取输出槽（slot 1）里刚烧好的 CD
             ItemStack cd = ((AbstractContainerMenu) (Object) this).getSlot(1).getItem();
             if (!CdNbtHelper.isMusicCd(cd)) {
                 KuGouLogger.warn("CDBurnerMenuMixin: no CD in output slot after burn");
@@ -45,62 +45,31 @@ public class CDBurnerMenuMixin {
             // 写入原曲识别信息（供 UrlRefresher 续期用）
             CdNbtHelper.writeOriginalInfo(cd, fileHash, albumId);
 
-            // 异步拉取歌词
-            fetchAndStoreLyric(cd, fileHash, albumId);
+            // 同步写入歌词（已在客户端刻录时拉取完成）
+            if (lrc != null && !lrc.isEmpty()) {
+                String song = setSongInfo.songName != null ? setSongInfo.songName : "";
+                CdNbtHelper.writeLyric(cd, lrc, song);
+                if (lrcTrans != null && !lrcTrans.isEmpty()) {
+                    CdNbtHelper.writeLyricTranslation(cd, lrcTrans);
+                }
+                KuGouLogger.info("CDBurnerMenuMixin: lyric written at burn time ({} chars)", lrc.length());
+
+                // 解析后立即填入 KuGouDisplayCompat：让 NetMusicDisplay 在播放器第一次
+                // setPlayToClient 之前就能取到 LyricRecord（Create DisplayLink 在服务端
+                // 调 provideLine 时，setPlayToClient 不一定已被触发）。
+                try {
+                    LrcConverter.KuGouLyricData lyricData = LrcConverter.toLyricData(lrc, lrcTrans, song);
+                    if (lyricData != null && lyricData.record != null) {
+                        KuGouDisplayCompat.putLyricByHash(fileHash, lyricData.record);
+                    }
+                } catch (Throwable ignored) {
+                }
+            } else {
+                KuGouLogger.info("CDBurnerMenuMixin: no lyric at burn time, will fallback at play time");
+            }
 
         } catch (Exception e) {
             KuGouLogger.warn("CDBurnerMenuMixin: error after setSongInfo: {}", e.getMessage());
         }
-    }
-
-    private static void fetchAndStoreLyric(ItemStack cd, String fileHash, String albumId) {
-        ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
-        if (info == null) return;
-
-        String singer = (info.artists == null || info.artists.isEmpty())
-                ? "" : String.join(", ", info.artists);
-        String song = info.songName == null ? "" : info.songName;
-        String keyword = (singer.isEmpty() ? "" : singer + " - ") + song;
-        if (keyword.isEmpty()) return;
-        int duration = info.songTime * 1000;
-
-        KuGouApiClient.searchLyric(fileHash, keyword, duration)
-                .thenAccept(candidate -> {
-                    if (candidate == null) {
-                        KuGouLogger.warn("CDBurnerMenuMixin: no lyric candidate for hash={}", fileHash);
-                        return;
-                    }
-
-                    // 先试 KRC（拿翻译字段 language）—— KRC fmt 才返回 language。
-                    // 如果 KRC 成功就用 KRC 内容（已解码为 LRC）+ 翻译；
-                    // 如果 KRC 失败（body 为空）则 fallback 到 LRC fmt（无翻译）。
-                    KuGouApiClient.getLyric(candidate.id, candidate.accessKey, "krc")
-                            .thenAccept(krcContent -> {
-                                if (krcContent != null && krcContent.lyricContent != null && !krcContent.lyricContent.isEmpty()) {
-                                    CdNbtHelper.writeLyric(cd, krcContent.lyricContent, song);
-                                    if (krcContent.languageJson != null) {
-                                        CdNbtHelper.writeLyricTranslation(cd, krcContent.languageJson);
-                                    }
-                                } else {
-                                    // KRC 失败 fallback 到 LRC（无翻译）
-                                    KuGouApiClient.getLyric(candidate.id, candidate.accessKey, "lrc")
-                                            .thenAccept(lrcContent -> {
-                                                if (lrcContent != null && lrcContent.lyricContent != null && !lrcContent.lyricContent.isEmpty()) {
-                                                    CdNbtHelper.writeLyric(cd, lrcContent.lyricContent, song);
-                                                } else {
-                                                    KuGouLogger.warn("CDBurnerMenuMixin: lyric body empty for hash={}", fileHash);
-                                                }
-                                            });
-                                }
-                            })
-                            .exceptionally(e -> {
-                                KuGouLogger.warn("CDBurnerMenuMixin: getLyric(krc) failed: {}", e.getMessage());
-                                return null;
-                            });
-                })
-                .exceptionally(e -> {
-                    KuGouLogger.warn("CDBurnerMenuMixin: searchLyric failed: {}", e.getMessage());
-                    return null;
-                });
     }
 }

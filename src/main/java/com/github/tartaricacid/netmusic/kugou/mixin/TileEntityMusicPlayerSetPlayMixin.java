@@ -1,6 +1,9 @@
 package com.github.tartaricacid.netmusic.kugou.mixin;
 
+import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
+import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.support.CdAddonData;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch;
@@ -66,6 +69,9 @@ public class TileEntityMusicPlayerSetPlayMixin {
         UUID playerId = null;
         try {
             TileEntityMusicPlayer self = (TileEntityMusicPlayer) (Object) this;
+            // 只在服务端执行：客户端 setPlayToClient 会在共享 PENDING map 里创建条目，
+            // 干扰服务端 tryTake，且客户端的 async refresh 回调无法 replay（isClientSide bail）。
+            if (self.getLevel() != null && self.getLevel().isClientSide()) return;
             IItemHandler inv = self.getPlayerInv();
             if (inv == null) return;
             ItemStack cd = inv.getStackInSlot(0);
@@ -95,10 +101,13 @@ public class TileEntityMusicPlayerSetPlayMixin {
                 pickedUrl = res.url();
                 fromPrefetch = true;
             } else {
-                // ====== 2. 没命中（例如是红石信号直接触发 playerMusic 而不是手动右键插CD）时：
+                // ====== 2. 没命中（红石信号直接触发 playerMusic 等"根本没有 onRightClickJukebox 预取"的场景）时：
                 // 先起播，提交异步刷新，完事后回调切歌。这样绝对不会卡 setPlayToClient。
                 pickedUrl = (oldCdUrl == null) ? "" : oldCdUrl;
-                if (level != null && pos != null && cd != null) {
+                // 仅在"tryTake 根本没找到 entry"时才新建 future。
+                // 如果 tryTake 找到了 entry 但 future 在 200ms 内没完成，它已经挂了 whenComplete，
+                // 再创建新 future 会导致 URL 变更后触发 2 次 replay（同一变更被两个 future 各回调一次）。
+                if (!res.entryFound() && !KuGouPrefetch.isOnReplayCooldown(pos) && level != null && pos != null && cd != null) {
                     UUID dummyOwner = new UUID(0L, pos.asLong()); // pos 作为 key，和 RightClick 的 "null playerId" 兜底遍历对齐
                     KuGouPrefetch.submitAsyncRefreshThenMaybeReplay(level, pos, dummyOwner, cd, pickedUrl);
                 }
@@ -139,6 +148,24 @@ public class TileEntityMusicPlayerSetPlayMixin {
                         info.songUrl == null ? 0 : info.songUrl.length(),
                         oldCdUrl == null ? 0 : oldCdUrl.length(),
                         (System.currentTimeMillis() - t0));
+            }
+
+            // ====== 5. 解析 CD 上的 LRC，写入 KuGouDisplayCompat 供 NetMusicDisplay 兼容层取用 ======
+            // LRC 是纯文本解析，不涉及网络调用；服务端可以独立做。
+            // NetMusicDisplay 的 LyricCache 只能从网易云 URL 提 ID，对酷狗 URL 返回 -1，
+            // LyricCacheDisplayCompat 会从 KuGouDisplayCompat 拿我们已经解析好的 LyricRecord。
+            try {
+                CdNbtHelper.Lyric stored = CdNbtHelper.readLyric(cd);
+                if (stored != null && stored.lrcText != null && !stored.lrcText.isEmpty()) {
+                    String transJson = CdNbtHelper.readLyricTranslation(cd);
+                    LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
+                            stored.lrcText, transJson,
+                            stored.songName != null ? stored.songName : (info != null ? info.songName : null));
+                    if (data != null && data.record != null) {
+                        KuGouDisplayCompat.putAll(pos, addon.fileHash(), data.record);
+                    }
+                }
+            } catch (Throwable ignored) {
             }
         } catch (Throwable t) {
             // 绝对不能抛异常打断原 setPlayToClient

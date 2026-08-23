@@ -415,7 +415,16 @@ public class NetMusicKuGou {
                         new com.github.tartaricacid.netmusic.kugou.support.CdAddonData(
                                 d.fileHash(), d.albumId(), System.currentTimeMillis(), d.lrc(), d.lrcTrans()));
 
-                // 从 CD NBT 重新组装 SongInfo，然后反射调用 setPlayToClient
+                // 老URL非空 → 第一次 setPlayToClient 已经用它起播了 → 不要 replay（会导致双重播放）
+                // 只静默更新 CD NBT，下次播放时自然用新 URL
+                if (oldUrl != null && !oldUrl.isEmpty()) {
+                    KuGouLogger.info(
+                            "[KuGouReplay] Silent URL update only (old URL non-empty, song likely playing): pos={}, oldLen={} newLen={}",
+                            pos, oldUrl.length(), newUrl.length());
+                    return;
+                }
+
+                // 老URL为空 → 第一次播放失败 → 需要 replay
                 com.github.tartaricacid.netmusic.item.ItemMusicCD.SongInfo info =
                         com.github.tartaricacid.netmusic.item.ItemMusicCD.getSongInfo(cd);
                 if (info == null) {
@@ -424,6 +433,18 @@ public class NetMusicKuGou {
                 }
                 // 无论原 info.songUrl 是什么，强制覆盖为新 URL
                 info.songUrl = newUrl;
+
+                // 先停掉当前播放，避免新旧声音重叠（双音问题）
+                // setPlay(false) + markDirty() 会发包让客户端的旧 NetMusicSound 在 tick() 里检测 isPlay=false 而自行停止
+                java.lang.reflect.Method setPlay = com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer.class
+                        .getDeclaredMethod("setPlay", boolean.class);
+                setPlay.setAccessible(true);
+                setPlay.invoke(mp, false);
+                java.lang.reflect.Method markDirty = com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer.class
+                        .getDeclaredMethod("markDirty");
+                markDirty.setAccessible(true);
+                markDirty.invoke(mp);
+
                 // 反射调用 TileEntityMusicPlayer.setPlayToClient(SongInfo)
                 java.lang.reflect.Method m = com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer.class
                         .getDeclaredMethod("setPlayToClient", com.github.tartaricacid.netmusic.item.ItemMusicCD.SongInfo.class);
@@ -588,20 +609,16 @@ public class NetMusicKuGou {
         // → 玩家体感"插CD卡一下"、方块音响 use() 流程被判定超时、CD 没入槽、必须右键好几次才成功。
         // 改成：提交异步预取 + 存 ConcurrentHashMap；紧接着的 setPlayToClient HEAD 里 tryTake(最多等200ms)，
         // 预取没在 200ms 内完成就先用旧 URL 起播，后台完事后通过 callback 延迟 1 tick 重新 setPlayToClient 切新 URL。
+        // 注意：不要在这里再调一次 submitAsyncRefreshThenMaybeReplay！setPlayToClient HEAD 的 tryTake
+        // 已经会在"找到 entry 但 future 未完成"时挂 whenComplete 触发 replay；
+        // 再叠一个 callback 会在 URL 变更后触发 2 次 replay → 同一首歌被放 2 次。
         final net.minecraft.core.BlockPos pos = event.getPos();
         final java.util.UUID playerId = event.getEntity().getUUID();
         final ItemStack cdSnap = held.copy();
-        final net.minecraft.world.level.Level level = event.getLevel();
-        // 当前 CD 上的 URL 用来后面异步回调时比较"新旧 URL 是否一致"
+        // 当前 CD 上的 URL 仅用于日志
         final String curUrl = com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper.readSongUrl(cdSnap);
 
         com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch.asyncPrefetch(pos, playerId, cdSnap);
-
-        // 如果 asyncPrefetch 500ms 后还没命中 setPlayToClient（例如玩家右键被父模组 GUI 打开打断了），
-        // 就手动兜底一次:异步刷新完后如果 URL 真的变了，把手上这张 CD 的 NBT 也提前写好。
-        // 这样即便走了其他罕见路径也尽量让下一轮 play 拿到新鲜 URL。
-        com.github.tartaricacid.netmusic.kugou.support.KuGouPrefetch.submitAsyncRefreshThenMaybeReplay(
-                level, pos, playerId, cdSnap, curUrl);
 
         KuGouLogger.info(
                 "[UrlRefresh] Async-prefetch submitted for CD insert at pos={}, player={}, curUrlLen={}",

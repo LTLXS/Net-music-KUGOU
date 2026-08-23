@@ -95,29 +95,27 @@ public record AddCdRefreshInfoMessage(
         if (keyword.isEmpty()) return;
         int duration = info.songTime * 1000; // 秒→毫秒
 
-        KuGouApiClient.searchLyric(msg.fileHash, keyword, duration)
-                .thenAccept(candidate -> {
-                    if (candidate == null) {
+        KuGouApiClient.searchLyricCandidates(msg.fileHash, keyword, duration, song, singer)
+                .thenAccept(list -> {
+                    if (list == null || list.isEmpty()) {
                         KuGouLogger.warn("AddCdRefreshInfo: no lyric candidate for hash={}, keyword={}",
                                 msg.fileHash, keyword);
                         return;
                     }
-
-                    KuGouApiClient.getLyric(candidate.id, candidate.accessKey, "lrc")
+                    // krc 优先：只有 KRC 的 [language:base64] 字段才携带翻译/罗马音，lrc 不携带。
+                    // krc 全候选失败时回退 lrc（代价是丢翻译，但至少有歌词）。
+                    KuGouApiClient.getLyricWithFallback(list, "krc")
                             .thenAccept(content -> {
-                                if (content == null || content.lyricContent == null || content.lyricContent.isEmpty()) {
-                                    // lrc 没拿到，试 krc
-                                    KuGouApiClient.getLyric(candidate.id, candidate.accessKey, "krc")
-                                            .thenAccept(krcContent -> {
-                                                if (krcContent != null && krcContent.lyricContent != null && !krcContent.lyricContent.isEmpty()) {
-                                                    CdNbtHelper.writeLyric(cd, krcContent.lyricContent, song);
-                                                } else {
-                                                    KuGouLogger.warn("AddCdRefreshInfo: lyric body empty for hash={}", msg.fileHash);
-                                                }
-                                            });
-                                    return;
+                                if (content != null && content.lyricContent != null && !content.lyricContent.isEmpty()) {
+                                    CdNbtHelper.writeLyric(cd, content.lyricContent, song);
+                                    // 翻译只在 krc 路径下存在；lrc 回退时 languageJson 为 null，不写
+                                    if (content.languageJson != null && !content.languageJson.isEmpty()) {
+                                        CdNbtHelper.writeLyricTranslation(cd, content.languageJson);
+                                    }
+                                } else {
+                                    KuGouLogger.warn("AddCdRefreshInfo: lyric body empty for hash={} (tried {} candidates, krc+lrc)",
+                                            msg.fileHash, list.size());
                                 }
-                                CdNbtHelper.writeLyric(cd, content.lyricContent, song);
                             })
                             .exceptionally(e -> {
                                 KuGouLogger.warn("AddCdRefreshInfo: getLyric failed: {}", e.getMessage());

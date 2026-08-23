@@ -8,6 +8,7 @@ import com.github.tartaricacid.netmusic.kugou.util.HttpUtils;
 import com.github.tartaricacid.netmusic.kugou.util.KuGouSignature;
 import com.google.gson.*;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import com.github.tartaricacid.netmusic.kugou.lyric.LyricMatchScorer;
 
 import java.io.IOException;
 import java.util.*;
@@ -1823,14 +1824,26 @@ public final class KuGouApiClient {
         public final String accessKey;
         public final String singer;
         public final String songName;
+        /** 酷狗服务端返回的 score（粗排）。 */
         public final int score;
+        /** 候选时长（毫秒），0 表示未知。 */
+        public final int duration;
+        /** 本地匹配评分（0..1），由 {@link LyricMatchScorer} 计算。 */
+        public final double matchScore;
 
         public LyricCandidate(String id, String accessKey, String singer, String songName, int score) {
+            this(id, accessKey, singer, songName, score, 0, 0.0);
+        }
+
+        public LyricCandidate(String id, String accessKey, String singer, String songName,
+                               int score, int duration, double matchScore) {
             this.id = id;
             this.accessKey = accessKey;
             this.singer = singer;
             this.songName = songName;
             this.score = score;
+            this.duration = duration;
+            this.matchScore = matchScore;
         }
     }
 
@@ -1842,29 +1855,38 @@ public final class KuGouApiClient {
      * <p>
      * languageJson 是酷狗 language 字段 base64 解码后的 JSON 字符串，含 type=0 原音/type=1 中文翻译。
      * 无翻译时为 null。
+     * <p>
+     * hasTranslation 标记 KRC 文本或 languageJson 中是否实际包含翻译数据。
+     * 调用方（{@link #getLyricWithFallback}）会优先选用 hasTranslation=true 的候选，
+     * 避免首选候选 score 最高但 KRC 内不含 [language:...] 行的情况。
      */
     public static final class LyricContent {
         public final String lyricContent;
         public final String format;
         public final String languageJson;
+        public final boolean hasTranslation;
 
         public LyricContent(String lyricContent, String format) {
-            this(lyricContent, format, null);
+            this(lyricContent, format, null, false);
         }
 
         public LyricContent(String lyricContent, String format, String languageJson) {
+            this(lyricContent, format, languageJson, languageJson != null && !languageJson.isEmpty());
+        }
+
+        public LyricContent(String lyricContent, String format, String languageJson, boolean hasTranslation) {
             this.lyricContent = lyricContent;
             this.format = format;
             this.languageJson = languageJson;
+            this.hasTranslation = hasTranslation;
         }
     }
 
     /**
-     * 搜索歌词候选。
+     * 搜索歌词候选（兼容重载：返回本地评分最高的单条）。
      * <p>
-     * 对应 KuGou server/module/search_lyric.js：访问 {@code https://lyrics.kugou.com/v1/search}，
-     * 该接口<strong>不使用</strong>默认签名、<strong>不携带</strong>默认参数（dfid/mid/appid...）。
-     * 仅需 {@code hash + keyword (+ lrctxt)}。返回 200 时取 score 最高的一条候选。
+     * 内部委托 {@link #searchLyricCandidates}，取列表首条。需要更精确匹配或多候选回退时
+     * 请直接调用 {@link #searchLyricCandidates}。
      *
      * @param hash     酷狗 hash（歌曲级，{@code getSongUrl} 用的同一个）
      * @param keyword  搜索关键字（一般用 "歌手 - 歌名"）
@@ -1872,13 +1894,36 @@ public final class KuGouApiClient {
      * @return 最佳候选；找不到时返回 null
      */
     public static CompletableFuture<LyricCandidate> searchLyric(String hash, String keyword, int duration) {
+        return searchLyricCandidates(hash, keyword, duration, "", "")
+                .thenApply(list -> (list == null || list.isEmpty()) ? null : list.get(0));
+    }
+
+    /**
+     * 搜索歌词候选并按本地匹配评分排序（最佳在前）。
+     * <p>
+     * 对应 KuGou server/module/search_lyric.js：访问 {@code https://lyrics.kugou.com/v1/search}，
+     * 该接口<strong>不使用</strong>默认签名、<strong>不携带</strong>默认参数（dfid/mid/appid...）。
+     * 仅需 {@code hash + keyword (+ lrctxt)}。返回全部候选，按本地评分 + 服务端 score 排序。
+     * 调用方可配合 {@link #getLyricWithFallback} 实现多候选回退。
+     *
+     * @param hash     酷狗 hash
+     * @param keyword  搜索关键字（一般用 "歌手 - 歌名"）
+     * @param duration 时长（毫秒），用于本地时长评分与服务端匹配，传 0 跳过
+     * @param songName 实际播放歌名，用于本地评分；为空时标题项给中性分
+     * @param singer   实际播放歌手，用于本地评分；为空时歌手项给中性分
+     * @return 按匹配度降序的候选列表；无候选时返回空列表
+     */
+    public static CompletableFuture<List<LyricCandidate>> searchLyricCandidates(
+            String hash, String keyword, int duration, String songName, String singer) {
         return CompletableFuture.supplyAsync(() -> {
+            String qSong = songName == null ? "" : songName;
+            String qSinger = singer == null ? "" : singer;
             if (hash == null || hash.isEmpty() || keyword == null || keyword.isEmpty()) {
                 KuGouLogger.warn("[NetMusicKuGou] searchLyric skipped: empty hash/keyword (hash={}, kw={})", hash, keyword);
-                return null;
+                return Collections.<LyricCandidate>emptyList();
             }
-            KuGouLogger.info("[NetMusicKuGou] searchLyric start: hash={}, keyword='{}', duration={}",
-                    hash, keyword, duration);
+            KuGouLogger.info("[NetMusicKuGou] searchLyric start: hash={}, keyword='{}', duration={}, song='{}', singer='{}'",
+                    hash, keyword, duration, qSong, qSinger);
             try {
                 // EchoMusic server/module/search_lyric.js: /v1/search + appid/clientver（非公开 /search）
                 Map<String, Object> params = new LinkedHashMap<>();
@@ -1889,7 +1934,7 @@ public final class KuGouApiClient {
                 params.put("hash", hash.toLowerCase());
                 params.put("keywords", keyword);  // 注意是 keywords 复数（与 EchoMusic 一致）
                 params.put("lrctxt", 1);
-                params.put("man", "no");
+                params.put("man", "yes");  // EchoMusic 传 man=yes，返回带翻译/罗马音的候选
 
                 Map<String, String> headers = new LinkedHashMap<>();
                 headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
@@ -1909,6 +1954,7 @@ public final class KuGouApiClient {
                     oldParams.put("hash", hash.toLowerCase());
                     oldParams.put("keyword", keyword);
                     oldParams.put("lrctxt", 1);
+                    oldParams.put("man", "yes");
                     if (duration > 0) oldParams.put("duration", duration);
                     response = HttpUtils.get("http://lyrics.kugou.com/search", headers, oldParams);
                     KuGouLogger.info("[NetMusicKuGou] searchLyric fallback HTTP {} bodyLen={}",
@@ -1917,17 +1963,19 @@ public final class KuGouApiClient {
 
                 if (!response.isOk() || response.body == null || response.body.isEmpty()) {
                     KuGouLogger.warn("[NetMusicKuGou] searchLyric HTTP {} or empty body", response.statusCode);
-                    return null;
+                    return Collections.<LyricCandidate>emptyList();
                 }
-                return parseSearchLyricResult(response.body);
+                return parseSearchLyricCandidates(response.body, qSong, qSinger, duration);
             } catch (Exception e) {
                 KuGouLogger.error("[NetMusicKuGou] searchLyric exception: {}", e.toString(), e);
-                return null;
+                return Collections.<LyricCandidate>emptyList();
             }
         });
     }
 
-    private static LyricCandidate parseSearchLyricResult(String jsonStr) {
+    private static List<LyricCandidate> parseSearchLyricCandidates(
+            String jsonStr, String querySong, String querySinger, int queryDurationMs) {
+        List<LyricCandidate> result = new ArrayList<>();
         try {
             if (jsonStr.length() < 800) {
                 KuGouLogger.info("[NetMusicKuGou] searchLyric resp preview: {}", jsonStr);
@@ -1935,7 +1983,7 @@ public final class KuGouApiClient {
                 KuGouLogger.info("[NetMusicKuGou] searchLyric resp preview: {}", jsonStr.substring(0, 800) + "...");
             }
             JsonObject root = GSON.fromJson(jsonStr, JsonObject.class);
-            if (root == null) return null;
+            if (root == null) return result;
 
             // v1/search: error_code=0 成功,status=200 也视为成功
             // 旧 /search: status=200 成功;status=1 也兼容
@@ -1946,7 +1994,7 @@ public final class KuGouApiClient {
             if (!success) {
                 KuGouLogger.warn("[NetMusicKuGou] searchLyric not success: status={}, error_code={}",
                         status, root.has("error_code") ? root.get("error_code").getAsInt() : -1);
-                return null;
+                return result;
             }
 
             JsonArray candidates = root.has("candidates") ? root.getAsJsonArray("candidates") : null;
@@ -1957,38 +2005,115 @@ public final class KuGouApiClient {
             }
             if (candidates == null || candidates.isEmpty()) {
                 KuGouLogger.warn("[NetMusicKuGou] searchLyric no candidates");
-                return null;
+                return result;
             }
 
-            // 取 score 最高的一项
-            LyricCandidate best = null;
+            // 收集全部候选，按本地匹配评分 + 服务端 score 排序（本地评分为主，服务端 score 作 tiebreak）
             for (JsonElement elem : candidates) {
                 if (!elem.isJsonObject()) continue;
                 JsonObject item = elem.getAsJsonObject();
                 String id = getStr(item, "id");
                 String accessKey = firstNonEmpty(getStr(item, "accesskey"), getStr(item, "accessKey"), getStr(item, "access_key"));
                 if (id.isEmpty() || accessKey.isEmpty()) continue;
-                LyricCandidate c = new LyricCandidate(
-                        id,
-                        accessKey,
-                        firstNonEmpty(getStr(item, "singer"), getStr(item, "SingerName"), getStr(item, "artist")),
-                        firstNonEmpty(getStr(item, "song"), getStr(item, "songname"), getStr(item, "SongName"), getStr(item, "title")),
-                        item.has("score") ? item.get("score").getAsInt() :
-                                (item.has("Score") ? item.get("Score").getAsInt() : 0));
-                if (best == null || c.score > best.score) {
-                    best = c;
-                }
+                String cSong = firstNonEmpty(getStr(item, "song"), getStr(item, "songname"), getStr(item, "SongName"), getStr(item, "title"));
+                String cSinger = firstNonEmpty(getStr(item, "singer"), getStr(item, "SingerName"), getStr(item, "artist"));
+                int serverScore = item.has("score") ? item.get("score").getAsInt() :
+                        (item.has("Score") ? item.get("Score").getAsInt() : 0);
+                int cDurationMs = parseDuration(item) * 1000;  // parseDuration 返回秒
+                double matchScore = LyricMatchScorer.scoreCandidate(cSong, cSinger, cDurationMs, querySong, querySinger, queryDurationMs);
+                result.add(new LyricCandidate(id, accessKey, cSinger, cSong, serverScore, cDurationMs, matchScore));
             }
-            KuGouLogger.info("[NetMusicKuGou] searchLyric best candidate: id={}, song='{}', singer='{}', score={}",
-                    best == null ? "null" : best.id,
-                    best == null ? "" : best.songName,
-                    best == null ? "" : best.singer,
-                    best == null ? 0 : best.score);
-            return best;
+            // 排序：本地 matchScore 降序，平局按服务端 score 降序
+            result.sort((a, b) -> {
+                int cmp = Double.compare(b.matchScore, a.matchScore);
+                if (cmp != 0) return cmp;
+                return Integer.compare(b.score, a.score);
+            });
+            if (!result.isEmpty()) {
+                LyricCandidate best = result.get(0);
+                KuGouLogger.info("[NetMusicKuGou] searchLyric best candidate: id={}, song='{}', singer='{}', serverScore={}, matchScore={}, durationMs={}, candidates={}",
+                        best.id, best.songName, best.singer, best.score,
+                        String.format(java.util.Locale.ROOT, "%.3f", best.matchScore), best.duration, result.size());
+            }
+            return result;
         } catch (Exception e) {
             KuGouLogger.warn("[NetMusicKuGou] parse search_lyric exception: {}", e.toString(), e);
-            return null;
+            return result;
         }
+    }
+
+    /**
+     * 依次尝试候选列表下载歌词，直到拿到非空内容。主格式全部候选都为空时，自动回退到另一格式重试全部候选。
+     * <p>
+     * 把「多候选回退」与「krc→lrc 回退」统一收敛到此方法，刻录路径与即时补拉路径共用。
+     *
+     * @param candidates {@link #searchLyricCandidates} 返回的候选列表（已按匹配度排序）
+     * @param primaryFmt 首选格式 "krc" 或 "lrc"；为空时默认 "krc"
+     * @return 首个非空歌词内容；全部失败返回 null
+     */
+    public static CompletableFuture<LyricContent> getLyricWithFallback(List<LyricCandidate> candidates, String primaryFmt) {
+        if (candidates == null || candidates.isEmpty()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        // 候选已按匹配度排序；限制回退数量避免极端情况下串行请求过多（最佳候选通常首个即命中）
+        final int MAX = 5;
+        List<LyricCandidate> pool = candidates.size() > MAX
+                ? new ArrayList<>(candidates.subList(0, MAX))
+                : candidates;
+        String primary = (primaryFmt == null || primaryFmt.isEmpty()) ? "krc" : primaryFmt;
+        String secondary = "krc".equals(primary) ? "lrc" : "krc";
+        // 第一遍：要求 hasTranslation=true（krc 路径专用，因为翻译只藏在 KRC 内嵌 [language:] 行里）
+        return getLyricWithFallback(pool, 0, primary, true)
+                .thenCompose(content -> {
+                    if (isUsableContent(content) && content.hasTranslation) {
+                        KuGouLogger.info("[NetMusicKuGou] getLyricWithFallback: primary fmt '{}' hit candidate[0..{}] with translation",
+                                primary, Math.min(MAX, candidates.size()));
+                        return CompletableFuture.completedFuture(content);
+                    }
+                    // 第二遍：primary fmt 所有候选都不带翻译但可能有的非空（或全失败），逐个试
+                    return getLyricWithFallback(pool, 0, primary, false)
+                            .thenCompose(plain -> {
+                                if (isUsableContent(plain)) {
+                                    KuGouLogger.info("[NetMusicKuGou] getLyricWithFallback: primary fmt '{}' no-translation result for one of {} candidates",
+                                            primary, pool.size());
+                                    return CompletableFuture.completedFuture(plain);
+                                }
+                                // 第三遍：secondary fmt 兜底（KRC 全失败时回退 LRC，代价是丢翻译但至少有歌词）
+                                KuGouLogger.info("[NetMusicKuGou] getLyricWithFallback: primary fmt '{}' empty for all {} candidates, trying '{}'",
+                                        primary, pool.size(), secondary);
+                                return getLyricWithFallback(pool, 0, secondary, false);
+                            });
+                });
+    }
+
+    private static boolean isUsableContent(LyricContent content) {
+        return content != null && content.lyricContent != null && !content.lyricContent.isEmpty();
+    }
+
+    private static CompletableFuture<LyricContent> getLyricWithFallback(
+            List<LyricCandidate> candidates, int idx, String fmt, boolean requireTranslation) {
+        if (idx >= candidates.size()) return CompletableFuture.completedFuture(null);
+        LyricCandidate c = candidates.get(idx);
+        return getLyric(c.id, c.accessKey, fmt)
+                .handle((content, ex) -> {
+                    if (ex != null) {
+                        KuGouLogger.warn("[NetMusicKuGou] getLyric candidate[{}] (id={}, fmt={}) error: {}",
+                                idx, c.id, fmt, ex.toString());
+                        return null;
+                    }
+                    return isUsableContent(content) ? content : null;
+                })
+                .thenCompose(content -> {
+                    if (isUsableContent(content) && (!requireTranslation || content.hasTranslation)) {
+                        if (requireTranslation) {
+                            KuGouLogger.info("[NetMusicKuGou] getLyric candidate[{}] (id={}, fmt={}) has translation, use it",
+                                    idx, c.id, fmt);
+                        }
+                        return CompletableFuture.completedFuture(content);
+                    }
+                    // 当前候选不满足要求，尝试下一个
+                    return getLyricWithFallback(candidates, idx + 1, fmt, requireTranslation);
+                });
     }
 
     /**
@@ -2010,96 +2135,103 @@ public final class KuGouApiClient {
                 KuGouLogger.warn("[NetMusicKuGou] getLyric skipped: empty id/accessKey (id={}, ak={})", id, accessKey);
                 return null;
             }
-            KuGouLogger.info("[NetMusicKuGou] getLyric start: id={}, fmt={}", id, fmt);
-            try {
-                String dfid = KuGouConfig.dfid;
-                if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) {
-                    dfid = "-";
-                }
-                String kugouApiMid = KuGouConfig.cookies.get("KUGOU_API_MID");
-                String mid = (kugouApiMid != null && !kugouApiMid.isEmpty())
-                        ? kugouApiMid
-                        : (KuGouConfig.mid != null ? KuGouConfig.mid : "");
-                String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
-                int cltime = (int) (System.currentTimeMillis() / 1000);
+            String useFmt = fmt != null ? fmt : "lrc";
+            KuGouLogger.info("[NetMusicKuGou] getLyric start: id={}, fmt={}", id, useFmt);
+            // EchoMusic 的 server 子模块（KuGouMusicApi）也是调 /download 接口，
+            // 翻译来自 KRC 内嵌的 [language:base64] 行，参数/签名完全一致。
+            return fetchLyricDownload(id, accessKey, useFmt);
+        });
+    }
 
-                // 概念版 Lite 凭证
-                String appid = "3116";
-                int clientver = 11440;
+    private static LyricContent fetchLyricDownload(String id, String accessKey, String fmt) {
+        try {
+            String dfid = KuGouConfig.dfid;
+            if (dfid == null || dfid.isEmpty() || "-".equals(dfid)) {
+                dfid = "-";
+            }
+            String kugouApiMid = KuGouConfig.cookies.get("KUGOU_API_MID");
+            String mid = (kugouApiMid != null && !kugouApiMid.isEmpty())
+                    ? kugouApiMid
+                    : (KuGouConfig.mid != null ? KuGouConfig.mid : "");
+            String userid = KuGouConfig.userid != null ? KuGouConfig.userid : "0";
+            int cltime = (int) (System.currentTimeMillis() / 1000);
 
-                Map<String, Object> params = new LinkedHashMap<>();
-                params.put("ver", 1);
-                params.put("client", "android");
-                params.put("id", id);
-                params.put("accesskey", accessKey);
-                params.put("fmt", fmt != null ? fmt : "lrc");
-                params.put("charset", "utf8");                 // EchoMusic lyric.js 必传
-                // 默认参数（与 /v5/url 一致）
-                params.put("dfid", dfid);
-                params.put("mid", mid);
-                params.put("uuid", "-");
-                params.put("appid", appid);
-                params.put("clientver", clientver);
-                params.put("clienttime", String.valueOf(cltime));
-                if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
-                    params.put("token", KuGouConfig.token);
-                }
-                if (!"0".equals(userid) && !userid.isEmpty()) {
-                    params.put("userid", userid);
-                }
+            // 概念版 Lite 凭证
+            String appid = "3116";
+            int clientver = 11440;
 
-                // Android 签名（GET，data 段为空）
-                params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("ver", 1);
+            params.put("client", "android");
+            params.put("id", id);
+            params.put("accesskey", accessKey);
+            params.put("fmt", fmt);
+            params.put("charset", "utf8");
+            // 默认参数（与 /v5/url 一致）
+            params.put("dfid", dfid);
+            params.put("mid", mid);
+            params.put("uuid", "-");
+            params.put("appid", appid);
+            params.put("clientver", clientver);
+            params.put("clienttime", String.valueOf(cltime));
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+                params.put("token", KuGouConfig.token);
+            }
+            if (!"0".equals(userid) && !userid.isEmpty()) {
+                params.put("userid", userid);
+            }
 
-                // Headers
-                Map<String, String> headers = new LinkedHashMap<>();
-                headers.put("User-Agent", "Android15-1070-1078-46-0-DiscoveryDRADProtocol-wifi");
-                headers.put("dfid", dfid);
-                headers.put("mid", mid);
-                headers.put("clienttime", String.valueOf(cltime));
-                headers.put("kg-rc", "1");
-                headers.put("kg-thash", "5d816a0");
-                headers.put("kg-rec", "1");
-                headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
+            // Android 签名（GET，data 段为空）
+            params.put("signature", KuGouSignature.signatureAndroidParams(params, ""));
 
-                // Cookie（与 VIP 查询保持一致）
-                StringBuilder cookieSb = new StringBuilder();
-                cookieSb.append("KUGOU_API_PLATFORM=lite; ");
-                if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
-                    cookieSb.append("token=").append(KuGouConfig.token).append("; ");
-                }
-                if (!"0".equals(userid) && !userid.isEmpty()) {
-                    cookieSb.append("userid=").append(userid).append("; ");
-                }
-                if (KuGouConfig.vipType != null && !KuGouConfig.vipType.isEmpty()) {
-                    cookieSb.append("vip_type=").append(KuGouConfig.vipType).append("; ");
-                }
-                if (KuGouConfig.vipToken != null && !KuGouConfig.vipToken.isEmpty()) {
-                    cookieSb.append("vip_token=").append(KuGouConfig.vipToken).append("; ");
-                }
-                for (var entry : KuGouConfig.cookies.entrySet()) {
-                    cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
-                }
-                String cookieStr = cookieSb.toString().trim();
-                if (!cookieStr.isEmpty()) {
-                    headers.put("Cookie", cookieStr);
-                }
+            // Headers
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Android15-1070-1078-46-0-DiscoveryDRADProtocol-wifi");
+            headers.put("dfid", dfid);
+            headers.put("mid", mid);
+            headers.put("clienttime", String.valueOf(cltime));
+            headers.put("kg-rc", "1");
+            headers.put("kg-thash", "5d816a0");
+            headers.put("kg-rec", "1");
+            headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
 
-                HttpUtils.HttpResponse response = HttpUtils.get(
-                        "https://lyrics.kugou.com/download", headers, params);
-                KuGouLogger.info("[NetMusicKuGou] getLyric HTTP {} bodyLen={}",
-                        response.statusCode, response.body == null ? 0 : response.body.length());
+            // Cookie（与 VIP 查询保持一致）
+            StringBuilder cookieSb = new StringBuilder();
+            cookieSb.append("KUGOU_API_PLATFORM=lite; ");
+            if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
+                cookieSb.append("token=").append(KuGouConfig.token).append("; ");
+            }
+            if (!"0".equals(userid) && !userid.isEmpty()) {
+                cookieSb.append("userid=").append(userid).append("; ");
+            }
+            if (KuGouConfig.vipType != null && !KuGouConfig.vipType.isEmpty()) {
+                cookieSb.append("vip_type=").append(KuGouConfig.vipType).append("; ");
+            }
+            if (KuGouConfig.vipToken != null && !KuGouConfig.vipToken.isEmpty()) {
+                cookieSb.append("vip_token=").append(KuGouConfig.vipToken).append("; ");
+            }
+            for (var entry : KuGouConfig.cookies.entrySet()) {
+                cookieSb.append(entry.getKey()).append("=").append(entry.getValue()).append("; ");
+            }
+            String cookieStr = cookieSb.toString().trim();
+            if (!cookieStr.isEmpty()) {
+                headers.put("Cookie", cookieStr);
+            }
 
-                if (!response.isOk() || response.body == null || response.body.isEmpty()) {
-                    KuGouLogger.warn("[NetMusicKuGou] getLyric HTTP {} or empty", response.statusCode);
-                    return null;
-                }
-                return parseLyricDownloadResponse(response.body, fmt != null ? fmt : "lrc");
-            } catch (Exception e) {
-                KuGouLogger.error("[NetMusicKuGou] getLyric exception: {}", e.toString(), e);
+            HttpUtils.HttpResponse response = HttpUtils.get(
+                    "https://lyrics.kugou.com/download", headers, params);
+            KuGouLogger.info("[NetMusicKuGou] getLyric(/download) HTTP {} bodyLen={}",
+                    response.statusCode, response.body == null ? 0 : response.body.length());
+
+            if (!response.isOk() || response.body == null || response.body.isEmpty()) {
+                KuGouLogger.warn("[NetMusicKuGou] getLyric(/download) HTTP {} or empty", response.statusCode);
                 return null;
             }
-        });
+            return parseLyricDownloadResponse(response.body, fmt);
+        } catch (Exception e) {
+            KuGouLogger.error("[NetMusicKuGou] getLyric(/download) exception: {}", e.toString(), e);
+            return null;
+        }
     }
 
     private static LyricContent parseLyricDownloadResponse(String jsonStr, String requestedFmt) {
@@ -2156,6 +2288,12 @@ public final class KuGouApiClient {
             String languageJson = null;
             if ("krc".equalsIgnoreCase(fmt)) {
                 lyricText = com.github.tartaricacid.netmusic.kugou.lyric.KrcDecoder.decodeToLrc(content);
+                // 诊断：打印解密后 KRC 前 500 字符，确认 [language:] 行是否存在
+                if (lyricText != null) {
+                    String krcPreview = lyricText.length() < 500 ? lyricText : lyricText.substring(0, 500);
+                    KuGouLogger.info("[NetMusicKuGou] KRC decrypted preview (has_language={}): {}",
+                            lyricText.contains("[language:"), krcPreview);
+                }
                 // KuGou 路径：KRC 解码后的 stripped text 里 [language:base64] 行
                 // 是翻译字段（不是 /lyrics/download 响应的 top-level language 字段！）
                 if (lyricText != null) {
@@ -2211,7 +2349,10 @@ public final class KuGouApiClient {
                 KuGouLogger.info(
                         "[NetMusicKuGou] /lyrics/download: NO language field in response");
             }
-            return new LyricContent(lyricText, fmt, languageJson);
+            // hasTranslation: 真正可用的翻译数据 = languageJson 非空 或 KRC 文本内含 [language:...] 行
+            boolean hasTranslation = (languageJson != null && !languageJson.isEmpty())
+                    || (lyricText != null && lyricText.contains("[language:"));
+            return new LyricContent(lyricText, fmt, languageJson, hasTranslation);
         } catch (JsonSyntaxException e) {
             KuGouLogger.warn("[NetMusicKuGou] parse lyric download failed: {}", e.getMessage());
             return null;

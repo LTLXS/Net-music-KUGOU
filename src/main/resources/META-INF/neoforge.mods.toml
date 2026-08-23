@@ -42,6 +42,20 @@ ordering = "AFTER"
 side = "BOTH"
 
 [[dependencies.netmusic_kugou]]
+modId = "netmusicdisplay"
+type = "optional"
+versionRange = "*"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
+modId = "netmusiccanneedqq"
+type = "optional"
+versionRange = "*"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.netmusic_kugou]]
 modId = "cloth_config"
 type = "required"
 versionRange = "[15.0,)"

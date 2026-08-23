@@ -66,6 +66,10 @@ public final class KuGouPrefetch {
 
     private static final ConcurrentHashMap<PrefetchKey, Entry> PENDING = new ConcurrentHashMap<>();
 
+    /** replay 冷却：同一 pos 在冷却期内不重复触发 scheduleReplayWithNewUrl，避免 refresh→replay→refresh 循环。 */
+    private static final ConcurrentHashMap<net.minecraft.core.BlockPos, Long> REPLAY_COOLDOWN = new ConcurrentHashMap<>();
+    private static final long REPLAY_COOLDOWN_MS = 30_000L;
+
     private record Entry(CompletableFuture<String> urlFuture, long createdAtMs,
                          net.minecraft.world.item.ItemStack cdSnapshot,
                          String fileHash, String albumId) {}
@@ -80,6 +84,25 @@ public final class KuGouPrefetch {
 
     public static void setOnRefreshChangedCallback(OnRefreshChangedCallback cb) {
         callback = cb;
+    }
+
+    /** 检查该 pos 是否在 replay 冷却期内。 */
+    public static boolean isOnReplayCooldown(net.minecraft.core.BlockPos pos) {
+        if (pos == null) return false;
+        Long last = REPLAY_COOLDOWN.get(pos);
+        if (last == null) return false;
+        if (System.currentTimeMillis() - last > REPLAY_COOLDOWN_MS) {
+            REPLAY_COOLDOWN.remove(pos);
+            return false;
+        }
+        return true;
+    }
+
+    /** 标记该 pos 刚被 replay，进入冷却。 */
+    private static void markReplayed(net.minecraft.core.BlockPos pos) {
+        if (pos != null) {
+            REPLAY_COOLDOWN.put(pos, System.currentTimeMillis());
+        }
     }
 
     // =================================================================== API
@@ -186,6 +209,12 @@ public final class KuGouPrefetch {
                     if (th != null) return;
                     if (finalUrl == null || finalUrl.isEmpty()) return;
                     if (finalUrl.equals(oldFallback)) return; // URL 没变不用切
+                    if (isOnReplayCooldown(posSafe)) {
+                        com.github.tartaricacid.netmusic.kugou.KuGouLogger.info(
+                                "[KuGouPrefetch] Skip replay: on cooldown for pos={}", posSafe);
+                        return;
+                    }
+                    markReplayed(posSafe);
                     OnRefreshChangedCallback cb = callback;
                     if (cb == null) return;
                     com.github.tartaricacid.netmusic.kugou.KuGouLogger.info(
@@ -205,7 +234,7 @@ public final class KuGouPrefetch {
         // 无论成功/失败/超时，只要我们走到这里说明已经用这条 entry 了，从 map 删掉避免泄露
         PENDING.remove(key);
 
-        return new PrefetchResult(url, completedNow, e.fileHash, e.albumId);
+        return new PrefetchResult(url, completedNow, e.fileHash, e.albumId, true);
     }
 
     /** setPlayToClient HEAD 用不到 Prefetch 时（异步 forceRefreshOne 失败），依然可以直接手动提交一个异步刷新 + 变更回调。 */
@@ -227,6 +256,12 @@ public final class KuGouPrefetch {
             if (th != null) return;
             if (newUrl == null || newUrl.isEmpty()) return;
             if (newUrl.equals(oldUrl)) return;
+            if (isOnReplayCooldown(posSafe)) {
+                com.github.tartaricacid.netmusic.kugou.KuGouLogger.info(
+                        "[KuGouPrefetch] Skip replay: on cooldown for pos={}", posSafe);
+                return;
+            }
+            markReplayed(posSafe);
             OnRefreshChangedCallback cb = callback;
             if (cb == null) return;
             try {
@@ -244,8 +279,8 @@ public final class KuGouPrefetch {
     }
 
     /** @see #tryTake */
-    public record PrefetchResult(String url, boolean completedSynchronously, String fileHash, String albumId) {
-        private static final PrefetchResult NONE = new PrefetchResult("", false, "", "");
+    public record PrefetchResult(String url, boolean completedSynchronously, String fileHash, String albumId, boolean entryFound) {
+        private static final PrefetchResult NONE = new PrefetchResult("", false, "", "", false);
         public static PrefetchResult none() { return NONE; }
         public boolean hasFreshUrl() { return url != null && !url.isEmpty(); }
     }

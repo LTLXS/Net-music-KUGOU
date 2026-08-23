@@ -116,7 +116,7 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
             KuGouLogger.error(
                     "[KuGouAudio] Stream CRASHED after {}ms: {} | url={}",
                     dt, t.getMessage(), urlPreview, t);
-            if (t instanceof IOException io) throw io;
+            if (t instanceof IOException) throw (IOException) t;
             throw new IOException("KuGou audio stream unexpected failure: " + t.getMessage(), t);
         }
     }

@@ -172,7 +172,7 @@ public class KuGouLoginScreen extends Screen {
         graphics.fill(panelX - 5, panelY - 5, panelX + panelWidth + 5, panelY + panelHeight - 5, 0xAA000000);
 
         // 标题
-        graphics.drawCenteredString(this.font, "酷狗扫码登录", this.width / 2, panelY - 20, 0xFFFFFF);
+        graphics.drawCenteredString(this.font, "酷狗扫码登录", this.width / 2, panelY - 30, 0xFFFFFF);
 
         renderQrCode(graphics, panelX, panelY);
 

@@ -6,15 +6,20 @@ plugins {
     id 'net.neoforged.moddev' version '1.0.14'
 }
 
-version = '1.0.5-beta-mc1.21.1'
+version = '1.0.5-release+neoforge1.21.1'
 group = 'com.github.tartaricacid'
 
 base {
     archivesName = 'netmusic_kugou'
 }
 
-// Minecraft 1.21+ 要求 Java 21
+// Minecraft 1.21+ 要求 Java 21 运行时，但 Mixin 0.8.7 只支持 class version 61 (JAVA_17)
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+// 编译时 target 16 生成 class version 60 兼容 Mixin JAVA_16
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['-source', '16', '-target', '16']
+}
 
 // neo_version 在 gradle.properties 配置（默认 21.1.77）
 neoForge {
@@ -101,6 +106,13 @@ dependencies {
     implementation 'it.unimi.dsi:fastutil:8.5.13'
     // 内嵌 Nayuki QR 库 class 文件
     implementation files('nayuki_extract')
+
+    // NetMusicDisplay 兼容层 compileOnly：
+    // 这两个 mod 都是 optional 依赖，但 mixin 编译时需要看见目标类。
+    // 用 compileOnly 避免把它们的运行时类打进我们的 jar（避免 jar 重复 / 体积膨胀）。
+    // 文件由 buildscript_lib/ 提供，本地导入，build.gradle 在 buildscript_lib 缺失时报错。
+    compileOnly files('buildscript_lib/create-1.21.1-6.0.10.jar')
+    compileOnly files('buildscript_lib/NetMusicDisplay-1.0.5-1.21.1-NeoForge.jar')
 }
 
 // ============== 离线补丁：把 neoform/minecraft-dependencies/loader 等

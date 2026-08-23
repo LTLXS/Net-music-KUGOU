@@ -42,13 +42,23 @@ public final class KrcDecoder {
             if (raw.length < 4) {
                 return null;
             }
-            byte[] body = new byte[raw.length - 4];
-            System.arraycopy(raw, 4, body, 0, body.length);
-
-            byte[] inflated = inflate(xorDecrypt(body));
-            String text = stripKrcTags(new String(inflated, java.nio.charset.StandardCharsets.UTF_8));
+            // 先尝试加密 KRC 解密路径（跳 4 字节魔数 → XOR → zlib inflate）
+            try {
+                byte[] body = new byte[raw.length - 4];
+                System.arraycopy(raw, 4, body, 0, body.length);
+                byte[] inflated = inflate(xorDecrypt(body));
+                String text = stripKrcTags(new String(inflated, java.nio.charset.StandardCharsets.UTF_8));
+                if (text != null && !text.trim().isEmpty()) {
+                    return text;
+                }
+            } catch (DataFormatException ignored) {
+                // 不是加密 KRC（可能是 decode=true 返回的明文 KRC），走 fallback
+            }
+            // fallback: 当明文 KRC/LRC 处理（decode=true 时服务端返回明文，无需解密）
+            String plainText = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+            String text = stripKrcTags(plainText);
             return (text == null || text.trim().isEmpty()) ? null : text;
-        } catch (IllegalArgumentException | DataFormatException e) {
+        } catch (Exception e) {
             KuGouLogger.warn("[NetMusicKuGou] KRC decode failed: {}", e.getMessage());
             return null;
         }

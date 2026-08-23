@@ -107,7 +107,8 @@ public record KuGouSearchMessage(
             // 服务端 → 客户端：填到屏幕
             context.enqueueWork(() -> {
                 var screen = net.minecraft.client.Minecraft.getInstance().screen;
-                if (screen instanceof KuGouSearchScreen searchScreen) {
+                if (screen instanceof KuGouSearchScreen) {
+                    KuGouSearchScreen searchScreen = (KuGouSearchScreen) screen;
                     searchScreen.setSearchResults(message.results);
                 }
             });
