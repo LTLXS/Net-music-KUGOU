@@ -2,14 +2,15 @@ package com.github.tartaricacid.netmusic.kugou.compat.display;
 
 import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.item.ItemMusicCD;
-import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.kugou.support.CdAddonData;
+import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
+import it.unimi.dsi.fastutil.ints.Int2ObjectSortedMap;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -18,9 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * 背景：{@code com.netmusicdisplay.source.LyricCache.extractSongId} 只能从网易云 URL
  * {@code ?id=数字.mp3} 提 ID，对酷狗 URL 返回 -1 → 链路直接断在"仅支持网易云歌词"。
- * 本类提供：(1) 一个 {@link ThreadLocal}，让 source Mixin 在调用 NetMusicDisplay
- * 之前写入当前音乐机 BlockPos；(2) 一个 fileHash → LyricRecord 缓存，由父 mod
- * 服务端 Mixin 写入，供 LyricCache mixin 查询。
+ * 本类提供：一个 fileHash → LyricRecord 服务端缓存（由父 mod 服务端 Mixin 写入），
+ * 供 display compat source Mixin 在拦截 NetMusicDisplay 的 provideText/provideLine 时查询。
  * <p>
  * <b>key 设计</b>：用 fileHash（酷狗原曲 ID）作缓存 key 跨维度/跨玩家复用，
  * 同一首歌在多个音乐机上播放时无需重复解析。
@@ -28,47 +28,19 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class KuGouDisplayCompat {
     private KuGouDisplayCompat() {}
 
-    /**
-     * 当前线程的"音乐机位置"上下文。NetMusicDisplay 的 source 在渲染歌词时会
-     * 调 {@code LyricCache.extractSongId} / {@code getLyric}，我们用
-     * source mixin 在调用前 set，LyricCache mixin 读后立即 clear。
-     */
-    private static final ThreadLocal<BlockPos> CURRENT_POS = new ThreadLocal<>();
-
     /** fileHash → LyricRecord。本进程内同源同 hash 复用。 */
     private static final ConcurrentHashMap<String, LyricRecord> LYRIC_BY_HASH = new ConcurrentHashMap<>();
 
     /**
      * pos → fileHash（最近一次写入的）。同一个音乐机可能切换歌曲，
-     * 用 putIfAbsent 保护：已经缓存的 fileHash 不会被覆盖。
+     * 用 put 覆盖即可。
      */
     private static final ConcurrentHashMap<BlockPos, String> HASH_BY_POS = new ConcurrentHashMap<>();
 
     /**
-     * 把音乐机位置写入当前线程上下文。source mixin 在调 NetMusicDisplay 前调。
-     */
-    public static void setCurrentPos(BlockPos pos) {
-        CURRENT_POS.set(pos);
-    }
-
-    /**
-     * 取出当前线程的 BlockPos，<b>不</b>清空。
-     */
-    public static BlockPos getCurrentPos() {
-        return CURRENT_POS.get();
-    }
-
-    /**
-     * 取出当前线程的 BlockPos 并清空。LyricCache mixin 在读取后立即调，避免 ThreadLocal 泄漏。
-     */
-    public static BlockPos takeCurrentPos() {
-        BlockPos p = CURRENT_POS.get();
-        CURRENT_POS.remove();
-        return p;
-    }
-
-    /**
      * 写入 fileHash → LyricRecord 映射。幂等：相同 hash 覆盖即可（同 hash = 同一首歌）。
+     * <p>
+     * 调用时机：刻录完成（服务端 CDBurnerMenuMixin）。
      */
     public static void putLyricByHash(String fileHash, LyricRecord record) {
         if (fileHash != null && !fileHash.isEmpty() && record != null) {
@@ -76,9 +48,6 @@ public final class KuGouDisplayCompat {
         }
     }
 
-    /**
-     * 读 LyricRecord。hash 为空/无记录时返回 null。
-     */
     public static LyricRecord getLyricByHash(String fileHash) {
         if (fileHash == null || fileHash.isEmpty()) return null;
         return LYRIC_BY_HASH.get(fileHash);
@@ -93,9 +62,6 @@ public final class KuGouDisplayCompat {
         }
     }
 
-    /**
-     * 按音乐机位置查 fileHash。
-     */
     public static String getHashByPos(BlockPos pos) {
         if (pos == null) return null;
         return HASH_BY_POS.get(pos);
@@ -103,29 +69,13 @@ public final class KuGouDisplayCompat {
 
     /**
      * 服务端 Mixin 在 setPlayToClient 命中预取并写好歌词后调：
-     * 把 fileHash 和 LyricRecord 同时落库，方便 LyricCache mixin 查询。
+     * 把 fileHash 和 LyricRecord 同时落库，方便 display compat source Mixin 查询。
      */
     public static void putAll(BlockPos pos, String fileHash, LyricRecord record) {
         registerPos(pos, fileHash);
         putLyricByHash(fileHash, record);
     }
 
-    /**
-     * 尝试为 NetMusicDisplay source 构建酷狗歌词上下文。
-     * <p>
-     * 流程：从 DisplayLinkContext 拿 sourcePos → level → BlockEntity →
-     * 判定 TileEntityMusicPlayer → 取 CD → 判定酷狗歌曲（CD 上有 fileHash）→
-     * 查缓存拿 LyricRecord → 计算 progress。
-     * <p>
-     * 返回值语义：
-     * <ul>
-     *   <li>返回 null：不是酷狗歌曲或前置条件不满足（非音乐机、无 CD、未播放），
-     *       调用方应放行原方法（让 NetMusicDisplay 走网易云路径）</li>
-     *   <li>返回非 null 但 record == null：是酷狗歌曲但歌词尚未加载，
-     *       调用方应 cancel 并返回"歌词加载中..."</li>
-     *   <li>返回非 null 且 record != null：调用方应 cancel 并返回当前歌词行</li>
-     * </ul>
-     */
     public static KuGouLyricContext getKuGouContext(BlockPos sourcePos, Level level) {
         if (sourcePos == null || level == null) return null;
         BlockEntity be = level.getBlockEntity(sourcePos);
@@ -138,11 +88,10 @@ public final class KuGouDisplayCompat {
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info == null || info.songUrl == null || info.songName == null) return null;
 
-        if (!player.isPlay()) return null; // 让原方法返回 "~"
+        if (!player.isPlay()) return null;
 
-        // 判定是否酷狗歌曲：CD 上有 fileHash 就是
         Optional<CdAddonData> optData = CdNbtHelper.readOriginalInfo(cd);
-        if (optData.isEmpty()) return null; // 不是酷狗，放行原方法
+        if (optData.isEmpty()) return null;
 
         String fileHash = optData.get().fileHash();
         if (fileHash == null || fileHash.isEmpty()) return null;
@@ -159,7 +108,52 @@ public final class KuGouDisplayCompat {
         return new KuGouLyricContext(record, progress, info.songName, currentTime);
     }
 
-    /** 酷狗歌词上下文。record 可能为 null（缓存未就绪）。 */
+    public static String currentLyricLine(LyricRecord record, int time) {
+        if (record == null) return null;
+        Int2ObjectSortedMap<String> lyrics = record.getLyrics();
+        if (lyrics == null || lyrics.isEmpty()) return null;
+        return lyrics.get(findFloorKey(lyrics, time));
+    }
+
+    public static String currentTransLine(LyricRecord record, int time) {
+        if (record == null) return null;
+        Int2ObjectSortedMap<String> trans = record.getTransLyrics();
+        if (trans == null || trans.isEmpty()) return null;
+        return trans.get(findFloorKey(trans, time));
+    }
+
+    public static boolean hasTranslation(LyricRecord record) {
+        if (record == null) return false;
+        Int2ObjectSortedMap<String> trans = record.getTransLyrics();
+        if (trans == null || trans.isEmpty()) return false;
+        for (String v : trans.values()) {
+            if (v != null && !v.isEmpty()) return true;
+        }
+        return false;
+    }
+
+    /** 在有序歌词表里做 floor 查找（取 <= targetTick 的最大 key）。复用渲染层逻辑。 */
+    private static int findFloorKey(Int2ObjectSortedMap<String> map, int targetTick) {
+        if (map == null || map.isEmpty()) return 0;
+        int firstKey = map.firstIntKey();
+        if (targetTick <= firstKey) return firstKey;
+        int lastKey = map.lastIntKey();
+        if (targetTick >= lastKey) return lastKey;
+        int lo = 0, hi = map.size() - 1, best = firstKey;
+        int[] keys = map.keySet().toIntArray();
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            int k = keys[mid];
+            if (k <= targetTick) {
+                best = k;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return best;
+    }
+
     public static final class KuGouLyricContext {
         public final LyricRecord record;
         public final int progress;

@@ -22,9 +22,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *   <li>本 Mixin @Inject(TAIL) → 从 {@link LyricInjectCache} 取缓存 → 替换 this.lyricRecord</li>
  * </ol>
  * <p>
- * 额外的 {@code tick()} 注入：当 CD 上没有 LRC 时，{@link MusicToClientMessageMixin#fetchLyricOnTheFly}
- * 会在后台异步拉取歌词。拉取完成后写入 {@link LyricInjectCache}，本 Mixin 的 tick() 注入会
- * 在下一个 tick 补设 {@code lyricRecord}，使歌词延迟几秒出现而不是整首歌不显示。
+ * 注意：本 Mixin 只注入构造器尾部，<b>绝不</b>注入 {@code tick()}。
+ * 因为 1.5.1 发布版的 {@code NetMusicSound} 并未 override {@code tick()}，
+ * 一旦写 {@code @Inject(method="tick")} 会导致整个 Mixin 因找不到目标而 FATAL 失效，
+ * 连带构造器里的歌词注入也一起丢失（表现为刻录唱片无歌词）。
  */
 @Mixin(value = NetMusicSound.class, remap = false)
 public class NetMusicSoundMixin {
@@ -46,26 +47,6 @@ public class NetMusicSoundMixin {
             }
         } catch (Exception e) {
             KuGouLogger.warn("KuGou lyric: failed to inject lyric into NetMusicSound: {}", e.getMessage());
-        }
-    }
-
-    @Inject(method = "tick", at = @At("TAIL"), remap = false)
-    private void netmusickugou$onTickTail(CallbackInfo ci) {
-        try {
-            java.lang.reflect.Field posField = NetMusicSound.class.getDeclaredField("pos");
-            posField.setAccessible(true);
-            Object rawPos = posField.get(this);
-
-            LyricRecord cached = (rawPos instanceof BlockPos) ? LyricInjectCache.take((BlockPos) rawPos) : null;
-            if (cached != null) {
-                java.lang.reflect.Field field = NetMusicSound.class.getDeclaredField("lyricRecord");
-                field.setAccessible(true);
-                field.set(this, cached);
-                KuGouLogger.info("KuGou lyric: late-injected lyricRecord ({} lines) into NetMusicSound at tick",
-                        cached.getLyrics() != null ? cached.getLyrics().size() : 0);
-            }
-        } catch (Exception e) {
-            KuGouLogger.warn("KuGou lyric: late inject in tick failed: {}", e.getMessage());
         }
     }
 }

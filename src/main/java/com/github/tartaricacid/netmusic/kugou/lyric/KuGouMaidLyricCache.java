@@ -3,6 +3,9 @@ package com.github.tartaricacid.netmusic.kugou.lyric;
 import it.unimi.dsi.fastutil.ints.Int2ObjectRBTreeMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectSortedMap;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -24,7 +27,19 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class KuGouMaidLyricCache {
     private KuGouMaidLyricCache() {}
 
-    private static final ConcurrentHashMap<String, CachedLyric> CACHE = new ConcurrentHashMap<>();
+    /** 缓存上限：女仆数量有限，超过则淘汰最旧 entry，避免内存无限增长。 */
+    private static final int MAX_ENTRIES = 256;
+
+    private static final Map<String, CachedLyric> CACHE =
+            Collections.synchronizedMap(new LinkedHashMap<String, CachedLyric>(64, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CachedLyric> eldest) {
+                    return size() > MAX_ENTRIES;
+                }
+            });
+
+    /** songName → 代表 key 的索引，使 peekBySongName 走 O(1) 命中，仅在兜底时回退 O(n) 扫描。 */
+    private static final ConcurrentHashMap<String, String> SONGNAME_INDEX = new ConcurrentHashMap<>();
 
     /**
      * 上次触发全局清理（removeIf）的 songName。同一首歌多次 put 时不再做 O(n) 扫描。
@@ -44,9 +59,6 @@ public final class KuGouMaidLyricCache {
         put(key, lrcText, transJson, null);
     }
 
-    /**
-     * 写入 LRC 文本 + 翻译 JSON + 罗马音 map。
-     */
     public static void put(String key, String lrcText, String transJson, Int2ObjectSortedMap<String> romaji) {
         if (key != null && lrcText != null && !lrcText.isEmpty()) {
             CACHE.put(key, new CachedLyric(lrcText, transJson, romaji));
@@ -61,20 +73,17 @@ public final class KuGouMaidLyricCache {
         put(maidId, songName, lrcText, transJson, null);
     }
 
-    /**
-     * 写入 LRC 文本 + 翻译 JSON（酷狗 KRC language 字段解码后的 JSON）+ 罗马音 map（酷狗 type=0）。
-     * 会清理不匹配当前 songName 的旧 entry。
-     */
     public static void put(long maidId, String songName, String lrcText,
                             String transJson, Int2ObjectSortedMap<String> romaji) {
         if (songName != null && !songName.equals(lastClearedSongName)) {
-            // 新歌开始：清理与当前 songName 不匹配的所有旧 entry
             // 同一首歌的多次 put（不同 maidId 共享）跳过这次扫描，避免 O(n) 退化
             String suffix = "|" + songName;
             CACHE.entrySet().removeIf(e -> !e.getKey().endsWith(suffix));
             lastClearedSongName = songName;
         }
-        put(makeKey(maidId, songName), lrcText, transJson, romaji);
+        String key = makeKey(maidId, songName);
+        SONGNAME_INDEX.put(songName, key);
+        put(key, lrcText, transJson, romaji);
     }
 
     public static CachedLyric take(String key) {
@@ -93,6 +102,13 @@ public final class KuGouMaidLyricCache {
      */
     public static CachedLyric peekBySongName(String songName) {
         if (songName == null) return null;
+        // 优先 O(1) 命中索引
+        String indexed = SONGNAME_INDEX.get(songName);
+        if (indexed != null) {
+            CachedLyric c = CACHE.get(indexed);
+            if (c != null) return c;
+        }
+        // 兜底：索引指向的 entry 已被消费/淘汰时，扫描其余同名 entry
         String suffix = "|" + songName;
         for (var entry : CACHE.entrySet()) {
             if (entry.getKey().endsWith(suffix)) {
@@ -104,11 +120,9 @@ public final class KuGouMaidLyricCache {
 
     public static void clearAll() {
         CACHE.clear();
+        SONGNAME_INDEX.clear();
     }
 
-    /**
-     * 缓存的歌词条目：LRC 原文 + 翻译 JSON + 罗马音 map。
-     */
     public static final class CachedLyric {
         public final String lrcText;
         public final String transJson;

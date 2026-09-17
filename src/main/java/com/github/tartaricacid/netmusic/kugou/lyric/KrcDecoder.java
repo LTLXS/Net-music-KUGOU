@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
+import java.util.regex.Pattern;
 
 /**
  * KRC 酷狗私有二进制歌词格式解码器。
@@ -14,13 +15,15 @@ import java.util.zip.Inflater;
  */
 public final class KrcDecoder {
 
-    /** KRC XOR 密钥（16 字节，不带 -128 减法） */
     private static final byte[] DECRYPT_KEY = {
             '@', 'G', 'a', 'w', '^', '2', 't', 'G',
             'Q', '6', '1', '-', (byte) 'Î', (byte) 'Ò', 'n', 'i'
     };
 
     private KrcDecoder() {}
+
+    private static final Pattern TAG_PATTERN = Pattern.compile("<[^>]*>");
+    private static final Pattern PAREN_PATTERN = Pattern.compile("\\([^)]*\\)");
 
     /**
      * 把 KRC base64 字符串解码为 LRC 文本。
@@ -42,7 +45,6 @@ public final class KrcDecoder {
             if (raw.length < 4) {
                 return null;
             }
-            // 先尝试加密 KRC 解密路径（跳 4 字节魔数 → XOR → zlib inflate）
             try {
                 byte[] body = new byte[raw.length - 4];
                 System.arraycopy(raw, 4, body, 0, body.length);
@@ -52,9 +54,7 @@ public final class KrcDecoder {
                     return text;
                 }
             } catch (DataFormatException ignored) {
-                // 不是加密 KRC（可能是 decode=true 返回的明文 KRC），走 fallback
             }
-            // fallback: 当明文 KRC/LRC 处理（decode=true 时服务端返回明文，无需解密）
             String plainText = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
             String text = stripKrcTags(plainText);
             return (text == null || text.trim().isEmpty()) ? null : text;
@@ -105,9 +105,9 @@ public final class KrcDecoder {
             if (tagEnd < 0) {
                 continue;
             }
-            String body = trimmed.substring(tagEnd + 1)
-                    .replaceAll("<[^>]*>", "")
-                    .replaceAll("\\([^)]*\\)", "");
+            String body = trimmed.substring(tagEnd + 1);
+            body = TAG_PATTERN.matcher(body).replaceAll("");
+            body = PAREN_PATTERN.matcher(body).replaceAll("");
             sb.append(trimmed, 0, tagEnd + 1).append(body).append('\n');
         }
         return sb.toString();

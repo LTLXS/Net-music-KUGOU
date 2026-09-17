@@ -1,4 +1,5 @@
 package com.github.tartaricacid.netmusic.kugou.api;
+import net.minecraft.network.chat.Component;
 
 /**
  * 酷狗 API 错误码解释器
@@ -15,33 +16,33 @@ public final class KuGouErrorCode {
      */
     public static String explain(int errorCode) {
         switch (errorCode) {
-            case 0: return "成功";
-            case 20002: return "请求格式错误（请检查模组版本）";
-            case 131001: return "今日VIP领取次数已用完，请明天再试";
-            case 297002: return "今日VIP升级已生效";
-            case 51002: return "登录已过期，请在游戏内重新登录酷狗账号";
-            case 51003: return "账号在其他设备登录，请重新登录";
-            case 51004: return "账号被冻结或封禁";
-            case 31002: return "VIP升级失败（可能是今日已升级）";
-            case 31003: return "账号无VIP领取资格";
-            case 10001: return "缺少必要参数";
-            case 10002: return "参数格式错误";
-            case 10003: return "签名验证失败";
-            case 10004: return "请求过于频繁，请稍后再试";
-            case 20001: return "服务端内部错误";
-            case 30001: return "账号不存在";
-            case 30002: return "密码错误";
-            case 30003: return "验证码错误";
-            case 40001: return "设备未注册";
-            case 40002: return "设备已被禁用";
-            case 31833: return "当前账号或音源无此歌曲版权（可用魔法 ppage_id 兜底/VIP 升级失败）";
-            case 61003: return "版权方要求,此歌曲无法提供";
-            case 30101: return "歌曲下架或暂无可播放资源";
-            case 35104: return "当前音质无可用版权或参数不匹配，将降级到下一音质/兜底接口";
-            case 20006: return "服务端签名校验失败（平台或签名盐不匹配）";
-            case 20010: return "请求参数格式错误（JSON 字段类型或结构不匹配）";
-            case 20008: return "缺少请求 Body（v6/priv_url 需要 POST JSON）";
-            default: return "未知错误";
+            case 0: return "netmusic_kugou.error.0";
+            case 20002: return "netmusic_kugou.error.20002";
+            case 131001: return "netmusic_kugou.error.131001";
+            case 297002: return "netmusic_kugou.error.297002";
+            case 51002: return "netmusic_kugou.error.51002";
+            case 51003: return "netmusic_kugou.error.51003";
+            case 51004: return "netmusic_kugou.error.51004";
+            case 31002: return "netmusic_kugou.error.31002";
+            case 31003: return "netmusic_kugou.error.31003";
+            case 10001: return "netmusic_kugou.error.10001";
+            case 10002: return "netmusic_kugou.error.10002";
+            case 10003: return "netmusic_kugou.error.10003";
+            case 10004: return "netmusic_kugou.error.10004";
+            case 20001: return "netmusic_kugou.error.20001";
+            case 30001: return "netmusic_kugou.error.30001";
+            case 30002: return "netmusic_kugou.error.30002";
+            case 30003: return "netmusic_kugou.error.30003";
+            case 40001: return "netmusic_kugou.error.40001";
+            case 40002: return "netmusic_kugou.error.40002";
+            case 31833: return "netmusic_kugou.error.31833";
+            case 61003: return "netmusic_kugou.error.61003";
+            case 30101: return "netmusic_kugou.error.30101";
+            case 35104: return "netmusic_kugou.error.35104";
+            case 20006: return "netmusic_kugou.error.20006";
+            case 20010: return "netmusic_kugou.error.20010";
+            case 20008: return "netmusic_kugou.error.20008";
+            default: return "netmusic_kugou.error.default";
         }
     }
 
@@ -71,8 +72,8 @@ public final class KuGouErrorCode {
     public static String getFullMessage(int errorCode) {
         String explanation = explain(errorCode);
         if (errorCode == 0) {
-            return explanation;
+            return Component.translatable(explanation).getString();
         }
-        return String.format("错误码 %d: %s", errorCode, explanation);
+        return Component.translatable("netmusic_kugou.error.full", errorCode, Component.translatable(explanation).getString()).getString();
     }
 }

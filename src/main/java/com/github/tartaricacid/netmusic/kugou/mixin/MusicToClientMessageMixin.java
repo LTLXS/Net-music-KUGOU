@@ -22,6 +22,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -38,6 +39,23 @@ import java.util.concurrent.TimeUnit;
 @Mixin(value = MusicToClientMessage.class, remap = false)
 public class MusicToClientMessageMixin {
 
+    private static final Field POS_FIELD;
+    private static final Field SONG_NAME_FIELD;
+
+    static {
+        Field p = null, s = null;
+        try {
+            p = MusicToClientMessage.class.getDeclaredField("pos");
+            p.setAccessible(true);
+            s = MusicToClientMessage.class.getDeclaredField("songName");
+            s.setAccessible(true);
+        } catch (NoSuchFieldException e) {
+            KuGouLogger.warn("KuGou lyric: failed to cache MusicToClientMessage fields: {}", e.getMessage());
+        }
+        POS_FIELD = p;
+        SONG_NAME_FIELD = s;
+    }
+
     @Inject(method = "onHandle", at = @At("HEAD"), remap = false, cancellable = false)
     private static void netmusickugou$onHandleHead(MusicToClientMessage message, CallbackInfo ci) {
         LyricInjectCache.clearAll();
@@ -45,13 +63,8 @@ public class MusicToClientMessageMixin {
             Level level = Minecraft.getInstance().level;
             if (level == null) return;
 
-            java.lang.reflect.Field posField = MusicToClientMessage.class.getDeclaredField("pos");
-            posField.setAccessible(true);
-            BlockPos pos = (BlockPos) posField.get(message);
-
-            java.lang.reflect.Field songNameField = MusicToClientMessage.class.getDeclaredField("songName");
-            songNameField.setAccessible(true);
-            String songName = (String) songNameField.get(message);
+            BlockPos pos = (BlockPos) POS_FIELD.get(message);
+            String songName = (String) SONG_NAME_FIELD.get(message);
 
             BlockEntity be = level.getBlockEntity(pos);
             if (!(be instanceof TileEntityMusicPlayer)) return;
@@ -101,10 +114,6 @@ public class MusicToClientMessageMixin {
         }
     }
 
-    /**
-     * CD 上没有 LRC 时（刻录时异步歌词拉取尚未完成），在客户端即时补拉。
-     * 拉取完成后写入 LyricInjectCache，NetMusicSoundMixin.tick() 会补设 lyricRecord。
-     */
     private static void fetchLyricOnTheFly(ItemStack cd, BlockPos pos, String songName) {
         CdAddonData addon = CdNbtHelper.getData(cd);
         if (!addon.hasFileHash()) {

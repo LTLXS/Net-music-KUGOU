@@ -4,29 +4,14 @@ bin/
 out/
 .gradle/
 
-# IDE
-.idea/
-*.iml
-.vscode/
-.eclipse/
-.vs/
-.classpath
-.project
-.settings/
-nbproject/
-nbbuild/
-nbdist/
+# Local libs (large, not committed)
+buildscript_lib/
 
-# OS
-.DS_Store
-Thumbs.db
-ehthumbs.db
-Desktop.ini
+# Gradle distribution (extracted, contains too-long doc paths)
+gradle/dist/
+gradle/wrapper/dist/
 
-# Java (root-level only)
-/*.class
-
-# NeoGradle run directories
+# NeoGradle / Forge run directories
 run/
 run-client/
 run-server/
@@ -34,17 +19,32 @@ run-server/
 # Generated resources
 src/generated/
 
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Java (root-level only)
+/*.class
+
 # Diagnostic / temp files (root-level only)
 /*.log
 /*.txt
-/*.ps1
 /*.out
 /*.err
 /*.zip
 
 # Temp directories
+tmp_extract/
+tmp_extract2/
 tmp-extract/
 moddev-extract/
-moddev-extract2/
 reference/
 nayuki_extract/

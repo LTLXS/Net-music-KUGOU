@@ -21,20 +21,12 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
-/**
- * 通用 HTTP 请求工具类，封装 GET/POST 请求和响应解析
- */
 public final class HttpUtils {
 
     private static final Gson GSON = new Gson();
     private static final int CONNECT_TIMEOUT = 10000;
     private static final int READ_TIMEOUT = 15000;
 
-    /**
-     * per-connection 全信任 SSLContext 缓存。
-     * <p>
-     * 按需给单个 connection 装 SSLContext，不污染 JVM 全局 SSLSocketFactory。
-     */
     private static volatile SSLContext TRUST_ALL_CONTEXT;
 
     private static SSLContext getTrustAllContext() {
@@ -58,10 +50,6 @@ public final class HttpUtils {
         return local;
     }
 
-    /**
-     * 如果 conn 是 HTTPS，给它装上 trust-all SSLContext。
-     * 调用方应在 {@code new URL(url).openConnection()} 后立即调用。
-     */
     private static void applyTrustAllIfHttps(HttpURLConnection conn) {
         if (conn instanceof HttpsURLConnection) {
             SSLContext sc = getTrustAllContext();
@@ -74,9 +62,6 @@ public final class HttpUtils {
 
     private HttpUtils() {}
 
-    /**
-     * GET 请求
-     */
     public static HttpResponse get(String url, Map<String, String> headers, Map<String, Object> params) throws IOException {
         String fullUrl = buildUrl(url, params);
         HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
@@ -89,9 +74,6 @@ public final class HttpUtils {
         return execute(conn);
     }
 
-    /**
-     * POST 请求 (form-urlencoded)
-     */
     public static HttpResponse postForm(String url, Map<String, String> headers, Map<String, Object> params) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         applyTrustAllIfHttps(conn);
@@ -138,10 +120,6 @@ public final class HttpUtils {
         return execute(conn);
     }
 
-    /**
-     * POST 请求：原始字符串 body + URL query 参数，返回二进制 bytes
-     * 用于设备注册等响应为二进制密文的 API
-     */
     public static BinaryHttpResponse postRawBinary(String url, Map<String, String> headers, Map<String, Object> queryParams, String rawBody) throws IOException {
         String fullUrl = buildUrl(url, queryParams);
         HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
@@ -162,9 +140,6 @@ public final class HttpUtils {
         return executeBinary(conn);
     }
 
-    /**
-     * 执行请求，返回二进制响应
-     */
     private static BinaryHttpResponse executeBinary(HttpURLConnection conn) throws IOException {
         conn.connect();
         int code = conn.getResponseCode();
@@ -205,9 +180,6 @@ public final class HttpUtils {
         }
     }
 
-    /**
-     * POST JSON body
-     */
     public static HttpResponse postJson(String url, Map<String, String> headers, String jsonBody) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         applyTrustAllIfHttps(conn);
@@ -235,9 +207,6 @@ public final class HttpUtils {
         }
     }
 
-    /**
-     * 构建完整 URL（公开方法，用于调试日志）
-     */
     public static String buildFullUrl(String baseUrl, Map<String, Object> params) {
         return buildUrl(baseUrl, params);
     }
@@ -262,7 +231,6 @@ public final class HttpUtils {
         conn.connect();
         int code = conn.getResponseCode();
 
-        // 读取 Set-Cookie
         Map<String, String> respCookies = new HashMap<>();
         Map<String, List<String>> headerFields = conn.getHeaderFields();
         for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
@@ -276,7 +244,6 @@ public final class HttpUtils {
             }
         }
 
-        // 读取响应体
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         if (is == null) {
             conn.disconnect();
@@ -295,7 +262,6 @@ public final class HttpUtils {
 
         String encoding = conn.getContentEncoding();
 
-        // 检测 gzip：Content-Encoding 声明 或 magic bytes (0x1f 0x8b)
         boolean isGzip = "gzip".equalsIgnoreCase(encoding)
                 || (rawBytes.length > 2 && (rawBytes[0] & 0xff) == 0x1f && (rawBytes[1] & 0xff) == 0x8b);
 

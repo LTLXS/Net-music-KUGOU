@@ -1,237 +1,148 @@
-plugins {
-    id 'java-library'
-    id 'eclipse'
-    id 'idea'
-    id 'maven-publish'
-    id 'net.neoforged.moddev' version '1.0.14'
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net' }
+        maven { url = 'https://maven.parchmentmc.org' }
+        maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+        maven { url = 'https://maven.shedaniel.me/' }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '[6.0.16,6.2)', changing: true
+        classpath 'org.parchmentmc:librarian:1.+'
+        classpath group: 'org.spongepowered', name: 'mixingradle', version: '0.7-SNAPSHOT'
+        classpath 'gradle.plugin.com.github.johnrengelman:shadow:7.1.2'
+    }
 }
 
-version = '1.0.5-release+neoforge1.21.1'
-group = 'com.github.tartaricacid'
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'org.parchmentmc.librarian.forgegradle'
+apply plugin: 'eclipse'
+apply plugin: 'org.spongepowered.mixin'
+apply plugin: 'com.github.johnrengelman.shadow'
+apply plugin: 'java'
 
+version = project.mod_version
+group = project.mod_group_id
 base {
-    archivesName = 'netmusic_kugou'
+    archivesName = project.mod_id
 }
 
-// Minecraft 1.21+ 要求 Java 21 运行时，但 Mixin 0.8.7 只支持 class version 61 (JAVA_17)
-java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
-// 编译时 target 16 生成 class version 60 兼容 Mixin JAVA_16
-tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs += ['-source', '16', '-target', '16']
-}
-
-// neo_version 在 gradle.properties 配置（默认 21.1.77）
-neoForge {
-    version = project.neo_version
-
-    // 关闭 Parchment，使用 Mojang official mappings（与 1.20.1 时相同策略）
-    // 默认 Mojang mappings 即可
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
 
     runs {
-        register('client') {
-            client()
-            gameDirectory.set(project.file('run/client'))
-            systemProperty 'forge.logging.markers', 'REGISTRIES'
-            systemProperty 'forge.logging.console.level', 'debug'
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
         }
-        register('server') {
-            server()
-            gameDirectory.set(project.file('run/server'))
-            systemProperty 'forge.logging.markers', 'REGISTRIES'
-            systemProperty 'forge.logging.console.level', 'debug'
-        }
-    }
 
-    mods {
-        register('netmusic_kugou') {
-            sourceSet(sourceSets.main)
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
         }
     }
+}
+
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
 }
 
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
-// 仓库顺序至关重要：local-mirror 必须在前，以提供 .module 文件中的 capability 声明
-// （neoform-runtime 1.0.0 的 externalTools 变体的 capability neoform-runtime-external-tools
-//  只在 .module 中定义；如果 BMCLAPI 仓库先被查询且没有 .module，Gradle 不会发现变体）
 repositories {
-    // 1. 完整本地镜像：包含 .module/.pom/.jar，capability 完整
-    maven { url = "file:///F:/minecraft mods/local-mirror/" }
-    // 2. MavenLocal 作为后备
-    mavenLocal()
-    // 3. 国内镜像
-    maven { url = "https://mirrors4.qlu.edu.cn/bmclapi/" }
-    // 4. Maven Central
-    mavenCentral()
-    // 5. Modrinth (NetMusic / Touhou Little Maid)
-    maven { url = "https://api.modrinth.com/maven" }
+    maven {
+        name = 'Maven-Shedaniel'
+        url = 'https://maven.shedaniel.me/'
+    }
 }
 
 dependencies {
-    // 1.21.1 NeoForge
-    // 关键: 强制要求 neoforge-dependencies capability，否则 compileClasspath 会同时选中
-    //  modDevApiElements (java-api + neoforge-dependencies) 和 universalJar (java-runtime)
-    //  引发 "Multiple incompatible variants" 错误。
-    //  universalJar 没有 neoforge-dependencies capability，所以 requireCapability
-    //  可以让 Gradle 在解析时直接排除 universalJar。
-    implementation("net.neoforged:neoforge:${neo_version}") {
-        capabilities {
-            requireCapability('net.neoforged:neoforge-dependencies')
-        }
-    }
-    // DataFixerUpper：com.mojang.serialization.Codec / RecordCodecBuilder 所在包
-    // 1.21.1 起从 MC libraries 引用，1.20.1 Forge 时代 Forge 已自带，迁移后需显式声明
-    implementation "com.mojang:datafixerupper:6.0.8"
-    // JOML：Camera.rotation() / PoseStack.mulPose() / Matrix4f 等的依赖
-    // 1.21.1 起从 MC libraries 引用，迁移后需显式声明（否则 Mixin 引用会编译失败）
-    implementation "org.joml:joml:1.10.5"
-    // Netty Buffer：RegistryFriendlyByteBuf / ByteBuf 等的依赖
-    // StreamCodec<RegistryFriendlyByteBuf, ...> 编译需要 ByteBuf 类型可见
-    implementation "io.netty:netty-buffer:4.1.82.Final"
-    // Brigadier：com.mojang.brigadier.Message 所在包
-    // SimpleMenuProvider 构造方法的 Component 参数实现 Message 接口，编译时需要 Message 可见
-    implementation "com.mojang:brigadier:1.3.10"
-    // 父 mod NetMusic 1.5.1（NeoForge 1.21.1 版本）
-    implementation "maven.modrinth:net-music:1.5.1-neoforge+mc1.21.1"
-    // 父 mod Touhou Little Maid 1.5.2（NeoForge 1.21.1 版本）
-    implementation "maven.modrinth:touhou-little-maid:1.5.2-neoforge+mc1.21.1"
-    // ClothConfig for NeoForge
-    // Modrinth Maven 坐标：maven.modrinth:cloth-config:15.0.140+neoforge
-    // （注意：artifact 名是 cloth-config，不是 cloth-config-neoforge）
-    implementation "maven.modrinth:cloth-config:15.0.140+neoforge"
-    // Mixin annotation processor
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    implementation fg.deobf("me.shedaniel.cloth:cloth-config-forge:11.1.136")
+    implementation files('buildscript_lib/netmusic-1.5.1-forge+mc1.20.1.jar')
+    implementation files('buildscript_lib/touhou-little-maid-1.5.2-forge+mc1.20.1.jar')
+    implementation files('buildscript_lib/qrcodegen-1.8.0.jar')
+    // NetMusicDisplay 兼容层 compileOnly（可选依赖：编译期用于解析 mixin 目标类与生成 refmap，
+    // 运行时由 NetMusicDisplay 模组自身提供，不打包进本 mod，避免类冲突）
+    compileOnly files('buildscript_lib/NetMusicDisplay-1.1.0-1.20.1-Forge.jar')
+    // Create 仅编译期需要（displayLink 的 DisplayLinkContext / DisplayTargetStats 类型）。
+    // Forge 版 Create 发布为 SRG 混淆，必须用 fg.deobf 反混淆才能在 mixin 里调用
+    // context.blockEntity().getSourcePosition() 等方法。
+    compileOnly fg.deobf(files('buildscript_lib/create-1.20.1-6.0.8.jar'))
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
-    // fastutil: Int2ObjectSortedMap/Int2ObjectRBTreeMap 等数据结构
-    implementation 'it.unimi.dsi:fastutil:8.5.13'
-    // 内嵌 Nayuki QR 库 class 文件
-    implementation files('nayuki_extract')
-
-    // NetMusicDisplay 兼容层 compileOnly：
-    // 这两个 mod 都是 optional 依赖，但 mixin 编译时需要看见目标类。
-    // 用 compileOnly 避免把它们的运行时类打进我们的 jar（避免 jar 重复 / 体积膨胀）。
-    // 文件由 buildscript_lib/ 提供，本地导入，build.gradle 在 buildscript_lib 缺失时报错。
-    compileOnly files('buildscript_lib/create-1.21.1-6.0.10.jar')
-    compileOnly files('buildscript_lib/NetMusicDisplay-1.0.5-1.21.1-NeoForge.jar')
 }
 
-// ============== 离线补丁：把 neoform/minecraft-dependencies/loader 等
-// BMCLAPI 没有的 artifact 直接指到本地 .m2 路径 ==============
-//
-// 背景：BMCLAPI 镜像缺少 net.neoforged:neoform（zip）、minecraft-dependencies 等 POM/JAR。
-// 这些文件已经在 C:\Users\Administrator\.m2\repository\ 里，但
-// neoFormRuntimeDependenciesCompileClasspath 这个 NeoGradle 自建 configuration
-// 不会去查 MavenLocal，只看 project.repositories（BMCLAPI）。
-// 用 configuration.all.dependencySubstitution 强制把
-// 找不到的 dependency 替换成 files() 路径。
-configurations.configureEach { cfg ->
-    if (cfg.name in ['neoFormRuntime', 'neoFormRuntimeDependenciesCompileClasspath',
-                     'neoFormRuntimeDependenciesExternalTools',
-                     'neoFormRuntimeDependenciesNeoForgeClasses',
-                     'neoFormRuntimeDependenciesNeoForgeSources',
-                     'neoFormRuntimeDependenciesRuntimeClasspath']) {
-        // DefaultUnlockedConfiguration 不暴露 repositories 属性（不支持修改）。
-        // 解决方案：把缺失的依赖下载到 local-mirror 目录中，由 project.repositories
-        // 自动解析（dependency 是从 minecraft-dependencies 父 POM 间接传递过来的）。
-        // 这里仅做依赖清理（accesstransformers 在 installertools 4.0.12 传递依赖，
-        //  1) maven.neoforged.net 不可达
-        //  2) accesstransformers:13.0.1 在所有公开仓库都不存在
-        //  3) installertools-4.0.12-fatjar 已 shaded 所有 accesstransformer 类）
-        try {
-            cfg.exclude(group: 'net.neoforged', module: 'accesstransformers')
-        } catch (Exception ignored) { }
-    }
-}
-
-// 全局 dependency substitution: 把 maven.neoforged.net 上无法访问的 artifact
-// 强制指向 local-mirror 中的 fatjar 文件
-// 关键: installertools:4.0.12 声明了 accesstransformers:13.0.1 传递依赖，但
-//  1) maven.neoforged.net 不可达
-//  2) accesstransformers:13.0.1 在所有公开 Maven 仓库都不存在（仅 neoforged 内部仓库有）
-//  3) installertools-4.0.12-fatjar.jar 已经 shaded 了所有 accesstransformer 类（578 个 entry）
-// 解决方案: 用 componentMetadataRule 替换 installertools:4.0.12 的所有 variant 为 fatjar 文件
-//  （fatjar 自带所有运行时代码，传递依赖仅在 resolution 阶段需要）
-//
-// 注意: 直接用 dependencySubstitution.substitute().using(files()) 会改变 configuration
-// 的 usage/dependency 状态，导致已解析的 configuration（如 neoForgeModContent*）出现
-// "Cannot change usage after resolved" 错误。所以改用 components.all 拦截 variant。
-// 用 componentMetadataRule + withVariant 强制 installertools:4.0.12 的所有 variant 指向 fatjar
-// 这样不需要改变 configuration 的 usage 就能让 Gradle 把 installertools:4.0.12 解析为 fatjar
-// （注意：files() artifact 替换对很多 Gradle 任务有副作用，所以仅在 externalTools 变体上做替换）
-// 关键修复: 修改 local-mirror/net/neoforged/neoforge/21.1.77/neoforge-21.1.77.module
-// 给 modDevApiElements 和 modDevRuntimeElements 加上 jvm.version=21 和 libraryelements=jar 属性
-// 解决 "Multiple incompatible variants" 错误
-// （universalJar 已有这些属性，但 modDevApi/modDevRuntime 原本没有，导致 Gradle 在解析
-//  compileClasspath 时同时选中 universalJar（java-runtime + jar + jvm21）和 modDevApiElements
-//  （java-api + external），usage 不一致从而报错）
-// 见 local-mirror/net/neoforged/neoforge/21.1.77/neoforge-21.1.77.module
-// 注：installertools:4.0.12 的传递依赖 accesstransformers:13.0.1 已在上面的
-// configurations.configureEach 块中通过 exclude 排除；fatjar 已 shaded 所有运行时代码
-
-processResources {
-    inputs.property 'version', project.version
-
-    filesMatching('META-INF/neoforge.mods.toml') {
-        expand 'version': project.version
-    }
-    
-    // 确保资源文件以 UTF-8 编码处理（含中文的 toml 文件需要此设置）
+tasks.named('processResources', ProcessResources).configure {
+    // 强制使用 UTF-8 处理 mods.toml，避免中文在 Windows GBK 环境下乱码
     filteringCharset = 'UTF-8'
+    var replaceProperties = [
+        minecraft_version   : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        forge_version       : forge_version,
+        forge_version_range: forge_version_range,
+        loader_version_range: loader_version_range,
+        mod_id              : mod_id,
+        mod_name            : mod_name,
+        mod_license         : mod_license,
+        mod_version         : mod_version,
+        mod_authors         : mod_authors,
+        mod_description     : mod_description,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml']) {
+        expand replaceProperties + [project: project]
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+    options.compilerArgs += ['-source', '16', '-target', '16']
 }
 
-// 将 Nayuki QR 库的 class 文件直接打入 mod JAR
+// 把 qrcodegen（二维码生成库）打进 mod jar，否则运行时 NoClassDefFoundError: io/nayuki/qrcodegen/QrCode$Ecc
+// （对齐 1.21.1 版本的做法：jar 任务 from 包含 io/nayuki/qrcodegen 的类）
 jar {
-    from('nayuki_extract') {
-        include 'io/nayuki/qrcodegen/*.class'
-        exclude 'module-info.class'
+    from(zipTree('buildscript_lib/qrcodegen-1.8.0.jar')) {
+        include 'io/nayuki/qrcodegen/**'
     }
 }
 
-// 自动复制构建后的 JAR 到 PCL2 mods 目录（开发用）
-// 必须在游戏未运行时执行；PCL2 launcher 会 lock mods 目录中的 jar
-// NeoGradle 1.0+ 没有 reobfJar 任务，jar 任务已内嵌 remap
 tasks.register('copyToMods') {
-    dependsOn 'jar'
+    dependsOn 'reobfJar'
     doLast {
-        def target = 'D:\\pcl ce\\0-1\\.minecraft\\versions\\modtest\\mods\\netmusic_kugou-1.0.0-beta-neoforge+mc1.21.1.jar'
-        def source = file("$buildDir/libs/netmusic_kugou-${version}.jar")
-        if (source.exists()) {
-            try {
-                ant.copy(file: source.absolutePath, tofile: target, overwrite: true)
-                println "[NetMusicKuGou] Copied JAR to $target (${source.length()} bytes)"
-            } catch (Exception e) {
-                println "[NetMusicKuGou] WARN: Failed to copy to mods (probably locked by PCL2): ${e.message}"
+        def targetDir = file('D:\\pcl ce\\0-1\\.minecraft\\versions\\1.20.1modstest\\mods')
+        def source = file("$buildDir/reobfJar/output.jar")
+        if (!source.exists()) {
+            println "[NetMusicKuGou] WARN: Source JAR not found: $source"
+            return
+        }
+        try {
+            // 清理旧版本 netmusic_kugou jar，避免残留旧 jar（如旧 -beta- 文件名）导致加载冲突
+            targetDir.listFiles()?.findAll { it.isFile() && it.name.toLowerCase().startsWith('netmusic_kugou') && it.name.toLowerCase().endsWith('.jar') }?.each { oldJar ->
+                println "[NetMusicKuGou] Removing old JAR: ${oldJar.absolutePath}"
+                oldJar.delete()
             }
-        }
-    }
-}
-
-// 诊断：列出项目 repositories
-tasks.register('dumpRepos') {
-    doLast {
-        println "===== project.repositories ====="
-        project.repositories.each { repo ->
-            try { println "  - ${repo.name} : ${repo.url}" } catch (e) { println "  - ${repo.name}" }
-        }
-        println ""
-        println "===== all configurations with neoForm in name ====="
-        configurations.findAll { it.name.toLowerCase().contains('neo') }.each { cfg ->
-            println "  cfg: ${cfg.name} (resolvable=${cfg.canBeResolved})"
-            try {
-                def files = cfg.files
-                println "    files: ${files.collect { it.name + ':' + it.length() }}"
-            } catch (e) { println "    (files err: ${e.message})" }
-            try {
-                cfg.resolvedConfiguration.lenientConfiguration.allDependencies.each { dep -> println "    -> ${dep.group}:${dep.name}:${dep.version}" }
-            } catch (e) { println "    (deps err: ${e.message})" }
-            try {
-                def repoNames = cfg.metaClass.respondsTo(cfg, 'getRepositories') ? cfg.repositories.collect { it.name + ':' + (it.hasProperty('url') ? it.url : '?') } : '(no repos)'
-                println "    repos: ${repoNames}"
-            } catch (e) { println "    (repos err: ${e.message})" }
+            def targetJar = new File(targetDir, "netmusic_kugou-${version}.jar")
+            ant.copy(file: source.absolutePath, tofile: targetJar.absolutePath, overwrite: true)
+            println "[NetMusicKuGou] Copied JAR to ${targetJar.absolutePath} (${source.length()} bytes)"
+        } catch (Exception e) {
+            println "[NetMusicKuGou] WARN: Failed to copy to mods (probably locked by PCL2): ${e.message}"
         }
     }
 }

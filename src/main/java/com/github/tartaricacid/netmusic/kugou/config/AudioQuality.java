@@ -1,9 +1,8 @@
 package com.github.tartaricacid.netmusic.kugou.config;
 
-/**
- * 酷狗音乐播放音质
- * 对应 KuGou 原版的 AudioQualityValue: '128' | '320' | 'flac' | 'high' | 'super'
- */
+import net.minecraft.network.chat.Component;
+import java.util.Locale;
+
 public enum AudioQuality {
     STANDARD("128", "标准品质 (MP3 128kbps)"),
     HQ("320", "HQ 高品质 (MP3 320kbps)"),
@@ -23,8 +22,8 @@ public enum AudioQuality {
         return value;
     }
 
-    public String getDisplayName() {
-        return displayName;
+    public Component getDisplayName() {
+        return Component.translatable("netmusic_kugou.audio_quality." + name().toLowerCase(Locale.ROOT));
     }
 
     public static AudioQuality fromValue(String value) {
@@ -41,6 +40,6 @@ public enum AudioQuality {
 
     @Override
     public String toString() {
-        return displayName;
+        return "netmusic_kugou.audio_quality." + name().toLowerCase(Locale.ROOT);
     }
 }

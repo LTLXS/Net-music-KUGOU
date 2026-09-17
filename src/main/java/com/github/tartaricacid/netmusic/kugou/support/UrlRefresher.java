@@ -7,7 +7,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
-import net.neoforged.neoforge.server.ServerLifecycleHooks;
+import net.minecraftforge.server.ServerLifecycleHooks;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -19,20 +19,8 @@ import java.net.URL;
 import java.security.cert.X509Certificate;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * 周期巡检器：扫描玩家物品栏和末影箱里的所有音乐 CD，
- * 发现烧入的 songUrl 已经失效（酷狗返回 403）就重新拉一个 URL 写回去。
- * <p>
- * 触发方式：{@code NetMusicKuGou.urlRefreshScheduler} 每 N 小时跑一次 {@link #scanAll()}。
- * <p>
- * 注意：只有本 mod 烧进去的 CD（{@code CdNbtHelper.readOriginalInfo} 能读到 fileHash 的）才会被处理。
- * 没有本 mod 烧入标识的 CD、或用户手动编辑的 CD 都会被跳过，避免误改。
- */
 public class UrlRefresher {
 
-    /**
-     * 扫描当前服务器上所有在线玩家
-     */
     public void scanAll() {
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {
@@ -52,9 +40,6 @@ public class UrlRefresher {
         }
     }
 
-    /**
-     * 扫描单个玩家的背包 + 末影箱。返回成功续期的 CD 数量。
-     */
     public int scanPlayer(ServerPlayer player) {
         AtomicInteger refreshed = new AtomicInteger(0);
         scanInventory(player.getInventory());
@@ -66,10 +51,7 @@ public class UrlRefresher {
         for (int i = 0; i < inv.getContainerSize(); i++) {
             ItemStack stack = inv.getItem(i);
             if (CdNbtHelper.isMusicCd(stack)) {
-                if (tryRefreshOne(stack)) {
-                    // setItem 会把内存里的 stack 写回原 slot
-                    // 这里 inv 本身就是背包引用，不需要额外 set
-                }
+                tryRefreshOne(stack);
             }
         }
     }
@@ -84,16 +66,6 @@ public class UrlRefresher {
         }
     }
 
-    /**
-     * 检查单个 CD（插入唱片机/右键点歌时调用）：
-     * <b>不做 isExpired 判断,无条件刷新 URL</b>。
-     * 因为 fs.youthandroid2.kugou.com/YYYYMMDDHHMM/... 这类时间戳 URL 过期后,
-     * 服务端会返回 302 跳错误页 / 200 text/html / 400,不会按预期 403,
-     * 导致 isExpired 经常误判"仍然有效"→不刷新→播放失败。
-     * 插入唱片机/点歌属于低频操作,直接刷新最稳。
-     *
-     * @return true 表示成功续期了 URL（或刷新后与原 URL 相同,但调用方一般会认为 OK）
-     */
     public boolean forceRefreshOne(ItemStack cd) {
         var infoOpt = CdNbtHelper.readOriginalInfo(cd);
         if (infoOpt.isEmpty()) return false;
@@ -112,7 +84,7 @@ public class UrlRefresher {
                 return false;
             }
             if (newUrl.equals(currentUrl)) {
-                KuGouLogger.info("[UrlRefresher] Force-refresh got same URL for hash={}, keeping as-is (assume still valid)", info.fileHash());
+                KuGouLogger.info("[UrlRefresher] Force-refresh got same URL for hash={}, keeping as-is", info.fileHash());
                 CdNbtHelper.updateData(cd, d -> new CdAddonData(
                         d.fileHash(), d.albumId(), System.currentTimeMillis(), d.lrc(), d.lrcTrans()
                 ));
@@ -132,15 +104,6 @@ public class UrlRefresher {
         }
     }
 
-    /**
-     * 检查单个 CD（周期巡检背包/末影箱调用）：
-     * - 没有 fileHash 记录 → 跳过
-     * - URL 内置时间戳超过 10 分钟 → 直接刷新
-     * - HEAD / Range-GET 判定为过期（403 / 410 / 302 跳非音频页 / 2xx 但 Content-Type!=audio）→ 刷新
-     * <p>
-     * 此方法会阻塞调用线程（HEAD + getSongUrl），适合在调度线程里调用。
-     * @return true 表示成功续期了 URL
-     */
     public boolean tryRefreshOne(ItemStack cd) {
         var infoOpt = CdNbtHelper.readOriginalInfo(cd);
         if (infoOpt.isEmpty()) {
@@ -157,51 +120,49 @@ public class UrlRefresher {
         KuGouLogger.info("[UrlRefresher] CD URL expired, refreshing: hash={}, oldUrl={}",
                 info.fileHash(),
                 currentUrl.length() < 120 ? currentUrl : currentUrl.substring(0, 120) + "...");
+        String newUrl;
         try {
-            String newUrl = KuGouApiClient.getSongUrl(info.fileHash(),
+            newUrl = KuGouApiClient.getSongUrl(info.fileHash(),
                     info.albumId() == null ? "" : info.albumId()).get(30, java.util.concurrent.TimeUnit.SECONDS);
-            if (newUrl == null || newUrl.isEmpty()) {
-                KuGouLogger.warn("[UrlRefresher] Failed to fetch new URL for hash={} (KuGou returned empty)", info.fileHash());
-                return false;
-            }
-            if (newUrl.equals(currentUrl)) {
-                KuGouLogger.info("[UrlRefresher] KuGou returned the same URL for hash={} (likely also expired). Will retry next round.", info.fileHash());
-                return false;
-            }
-            CdNbtHelper.updateSongUrl(cd, newUrl);
-            CdNbtHelper.updateData(cd, d -> new CdAddonData(
-                    d.fileHash(), d.albumId(), System.currentTimeMillis(), d.lrc(), d.lrcTrans()
-            ));
-            KuGouLogger.info("[UrlRefresher] CD URL refreshed: hash={} -> newUrlPrefix={}", info.fileHash(),
-                    newUrl.length() < 80 ? newUrl : newUrl.substring(0, 80) + "...");
-            return true;
         } catch (Exception e) {
-            KuGouLogger.error("[UrlRefresher] Exception while refreshing hash={}: {}",
+            KuGouLogger.error("[UrlRefresher] Exception while fetching hash={}: {}",
                     info.fileHash(), e.getMessage(), e);
             return false;
         }
+        if (newUrl == null || newUrl.isEmpty()) {
+            KuGouLogger.warn("[UrlRefresher] Failed to fetch new URL for hash={} (KuGou returned empty)", info.fileHash());
+            return false;
+        }
+        if (newUrl.equals(currentUrl)) {
+            KuGouLogger.info("[UrlRefresher] KuGou returned the same URL for hash={} (likely also expired). Will retry next round.", info.fileHash());
+            return false;
+        }
+        // 探测与网络请求已在调用线程（调度线程）完成；NBT 回写必须在主线程执行
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null) {
+            server.execute(() -> {
+                try {
+                    CdNbtHelper.updateSongUrl(cd, newUrl);
+                    CdNbtHelper.updateData(cd, d -> new CdAddonData(
+                            d.fileHash(), d.albumId(), System.currentTimeMillis(), d.lrc(), d.lrcTrans()
+                    ));
+                    KuGouLogger.info("[UrlRefresher] CD URL refreshed: hash={} -> newUrlPrefix={}", info.fileHash(),
+                            newUrl.length() < 80 ? newUrl : newUrl.substring(0, 80) + "...");
+                } catch (Exception e) {
+                    KuGouLogger.error("[UrlRefresher] Exception while writing hash={}: {}",
+                            info.fileHash(), e.getMessage(), e);
+                }
+            });
+        }
+        return true;
     }
 
-    /**
-     * 用多种规则判断 URL 是否已过期：
-     * <ol>
-     *   <li>快速规则：若 URL 匹配 {@code /YYYYMMDDHHMM/} 时间戳路径，超过 10 分钟直接算过期</li>
-     *   <li>HEAD 请求：
-     *     <ul>
-     *       <li>403 / 410 / 400 → 过期</li>
-     *       <li>302：跳转后 Location 明显不是音频页（跳转域名不含 kugou / url 不含路径 hash）→ 过期</li>
-     *       <li>2xx：如果 Content-Type 不是 audio/* / application/octet-stream → 过期（大概率是 200 HTML 错误页）</li>
-     *     </ul>
-     *   </li>
-     * </ol>
-     */
     private boolean isExpired(String url) {
-        // 1) 快速过期判断：fs.youthandroid2.kugou.com / YYYYMMDDHHMM 路径 token 型 URL
         java.util.regex.Matcher m = TIMESTAMP_URL.matcher(url);
         if (m.find()) {
             try {
-                String ymd = m.group(1);  // YYYYMMDD
-                String hm = m.group(2);   // HHMM
+                String ymd = m.group(1);
+                String hm = m.group(2);
                 int year = Integer.parseInt(ymd.substring(0, 4));
                 int month = Integer.parseInt(ymd.substring(4, 6));
                 int day = Integer.parseInt(ymd.substring(6, 8));
@@ -223,7 +184,7 @@ public class UrlRefresher {
         HttpURLConnection conn = null;
         try {
             conn = openConnection(url, timeoutMs);
-            conn.setInstanceFollowRedirects(false);  // 我们自己判断 302
+            conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod("HEAD");
             conn.setRequestProperty("User-Agent", "NetMusic-KuGou/1.0");
             int code = conn.getResponseCode();
@@ -232,24 +193,19 @@ public class UrlRefresher {
             }
             if (code == 403 || code == 410 || code == 400) return true;
             if (code >= 301 && code <= 307) {
-                // 30x:如果 Location 明显跳转到错误页/非音频域,算过期;否则跟过去判断
                 String location = conn.getHeaderField("Location");
                 if (location == null || location.isEmpty()) return true;
-                // 重定向到明显的登录、版权、error 页面
                 String lower = location.toLowerCase();
                 if (lower.contains("403") || lower.contains("expire") || lower.contains("copyright")
                         || lower.contains("login") || lower.contains("error") || lower.contains("forbidden")) {
                     return true;
                 }
                 if (!lower.contains("kugou") && !lower.contains(".mp3") && !lower.contains(".flac") && !lower.contains(".m4a")) {
-                    // 跳转到非酷狗域且后缀不是音频,几乎可以确定是过期跳转广告/错误页
                     return true;
                 }
-                // 否则跟着跳转再试一次 Range GET
                 return isExpiredViaRangeGet(url, timeoutMs);
             }
             if (code >= 200 && code < 300) {
-                // 2xx: 检查 Content-Type,如果不是 audio/* / application/octet-stream 就极可能是 200 HTML 错误页
                 String ct = conn.getContentType();
                 if (ct != null) {
                     String lowerCt = ct.toLowerCase();
@@ -274,15 +230,10 @@ public class UrlRefresher {
         }
     }
 
-    /** 对 fs.youthandroid2.kugou.com/YYYYMMDDHHMM/... 这类 URL 的时间戳正则 */
     private static final java.util.regex.Pattern TIMESTAMP_URL =
             java.util.regex.Pattern.compile("/(20\\d{6})/(\\d{4})/");
-    /** 时间戳 URL 最大有效期（10 分钟） */
     private static final long TIMESTAMP_URL_MAX_VALID_MS = 10L * 60L * 1000L;
 
-    /**
-     * Range GET 兜底：只请求 1 字节，看响应码
-     */
     private boolean isExpiredViaRangeGet(String url, int timeoutMs) {
         HttpURLConnection conn = null;
         try {
@@ -291,7 +242,6 @@ public class UrlRefresher {
             conn.setRequestProperty("Range", "bytes=0-0");
             conn.setRequestProperty("User-Agent", "NetMusic-KuGou/1.0");
             int code = conn.getResponseCode();
-            // 立即断开，避免下载整个文件
             try {
                 if (conn.getInputStream() != null) {
                     conn.getInputStream().close();
@@ -309,13 +259,8 @@ public class UrlRefresher {
 
     private HttpURLConnection openConnection(String url, int timeoutMs) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        if (conn instanceof HttpsURLConnection) {
-            // Kugou 的 CDN 偶发证书链问题，给个全信任的 SSLContext 避免误判
-            try {
-                SSLContext sc = SSLContext.getInstance("TLS");
-                sc.init(null, TRUST_ALL_MANAGERS, new java.security.SecureRandom());
-                ((HttpsURLConnection) conn).setSSLSocketFactory(sc.getSocketFactory());
-            } catch (Exception ignored) {}
+        if (conn instanceof HttpsURLConnection && TRUST_ALL_SSL_CONTEXT != null) {
+            ((HttpsURLConnection) conn).setSSLSocketFactory(TRUST_ALL_SSL_CONTEXT.getSocketFactory());
         }
         conn.setConnectTimeout(timeoutMs);
         conn.setReadTimeout(timeoutMs);
@@ -330,4 +275,17 @@ public class UrlRefresher {
                 @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             }
     };
+
+    /** 全信任 SSLContext 单例：避免每次探测都重建（含 SecureRandom），仅类加载时创建一次。 */
+    private static final SSLContext TRUST_ALL_SSL_CONTEXT;
+    static {
+        SSLContext sc = null;
+        try {
+            sc = SSLContext.getInstance("TLS");
+            sc.init(null, TRUST_ALL_MANAGERS, new java.security.SecureRandom());
+        } catch (Exception e) {
+            KuGouLogger.warn("[UrlRefresher] failed to init trust-all SSLContext: {}", e.getMessage());
+        }
+        TRUST_ALL_SSL_CONTEXT = sc;
+    }
 }

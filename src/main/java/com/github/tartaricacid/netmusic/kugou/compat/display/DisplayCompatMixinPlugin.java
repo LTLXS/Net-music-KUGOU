@@ -10,48 +10,24 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * NetMusicDisplay 兼容层 mixin 的总开关插件。
- * <p>
- * NetMusicDisplay 是 <b>可选</b> 依赖：当用户没装该 mod 时，对 {@code com.netmusicdisplay.*} 类
- * 的 mixin 必须全部跳过，否则会因找不到目标类导致 {@code ClassNotFoundException} 直接让游戏崩。
- * <p>
- * 检测方式：在 mixin 加载早期（{@code onLoad}）通过 {@code Class.forName} 试探
- * {@code com.netmusicdisplay.source.LyricCache}，结果缓存到 {@link #displayModPresent}，
- * 之后所有 {@link #shouldApplyMixin} 都直接读这个缓存。
- * <p>
- * 注意：{@code onLoad} 在 mod 主类构造之前触发，{@code ModList.get()} 可能还没就绪，
- * 所以<b>不</b>用 FML API，改用 {@code Class.forName}（它会走 classloader 试探性查找，
- * 不强制初始化），这样即使没装 NetMusicDisplay 也不会抛异常。
+ * 控制 display 兼容 mixin 是否启用：仅当 NetMusicDisplay 模组存在时才应用，
+ * 否则全部跳过（避免对未安装 NetMusicDisplay 的环境产生影响）。
  */
 public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
-
     private static final Logger LOGGER = LogManager.getLogger("NetMusicKuGou-DisplayCompat");
     private static final String DISPLAY_LYRIC_CACHE = "com.netmusicdisplay.source.LyricCache";
-
-    private static boolean displayModPresent = false;
-    private static boolean probed = false;
-
-    private static synchronized boolean probeDisplayMod() {
-        if (probed) return displayModPresent;
-        try {
-            Class.forName(DISPLAY_LYRIC_CACHE, false,
-                    DisplayCompatMixinPlugin.class.getClassLoader());
-            displayModPresent = true;
-        } catch (Throwable ignored) {
-            displayModPresent = false;
-        }
-        probed = true;
-        if (displayModPresent) {
-            LOGGER.info("[DisplayCompat] NetMusicDisplay detected, enabling display compatibility mixins");
-        } else {
-            LOGGER.info("[DisplayCompat] NetMusicDisplay not present, all display compatibility mixins will be skipped");
-        }
-        return displayModPresent;
-    }
+    private static boolean netMusicDisplayPresent;
 
     @Override
     public void onLoad(String mixinPackage) {
-        probeDisplayMod();
+        try {
+            Class.forName(DISPLAY_LYRIC_CACHE, false, DisplayCompatMixinPlugin.class.getClassLoader());
+            netMusicDisplayPresent = true;
+            LOGGER.info("[DisplayCompat] NetMusicDisplay detected, enabling display compatibility mixins");
+        } catch (Throwable t) {
+            netMusicDisplayPresent = false;
+            LOGGER.info("[DisplayCompat] NetMusicDisplay not present, all display compatibility mixins will be skipped");
+        }
     }
 
     @Override
@@ -60,16 +36,18 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
     }
 
     @Override
-    public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        // 兼容层 mixin 文件名都以 "Display" 开头，方便统一识别
+    public boolean shouldApplyMixin(String mixinClassName, String targetClassName) {
+        // 非 display 兼容的 mixin 一律正常应用；只有以 DisplayCompat 结尾（或在 compat.display 包内）的
+        // 才需要在 NetMusicDisplay 缺失时整体跳过。
         if (!mixinClassName.endsWith("DisplayCompat") && !mixinClassName.contains(".Display")) {
             return true;
         }
-        return probeDisplayMod();
+        return netMusicDisplayPresent;
     }
 
     @Override
-    public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) {}
+    public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) {
+    }
 
     @Override
     public List<String> getMixins() {
@@ -77,8 +55,10 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
     }
 
     @Override
-    public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {}
+    public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+    }
 
     @Override
-    public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {}
+    public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+    }
 }
