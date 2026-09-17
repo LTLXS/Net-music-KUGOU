@@ -1,45 +1,30 @@
 package com.github.tartaricacid.netmusic.kugou.support;
 
-import com.github.tartaricacid.netmusic.kugou.init.InitDataComponent;
 import com.github.tartaricacid.netmusic.item.ItemMusicCD;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 
-/**
- * 父 mod 的 ItemMusicCD 已完全 DataComponent 化，不再挂 NBT。
- * 本类对 {@link CdAddonData} 进行读写，封装在 ItemStack 的
- * {@link InitDataComponent#CD_ADDON_DATA} 组件上。
- *
- * <p>CD 上烧入的 songUrl 是酷狗短时签名 URL，过期后会 403。
- * 有了 fileHash + albumId，我们就能在过期时重新调一次
- * {@code KuGouApiClient.getSongUrl()} 拿新 URL。</p>
- */
 public final class CdNbtHelper {
     private CdNbtHelper() {}
 
-    /**
-     * 判断 ItemStack 是不是 netmusic 的音乐 CD（避免对其他物品误操作）
-     */
     public static boolean isMusicCd(ItemStack stack) {
         return stack != null && !stack.isEmpty() && stack.getItem() instanceof ItemMusicCD;
     }
 
-    /**
-     * 读取 CD 上的 {@link CdAddonData}（不可变 record）。没有则返回 {@link CdAddonData#EMPTY}。
-     */
     public static CdAddonData getData(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return CdAddonData.EMPTY;
         }
-        return cd.getOrDefault(InitDataComponent.CD_ADDON_DATA, CdAddonData.EMPTY);
+        CompoundTag tag = cd.getOrCreateTag();
+        CompoundData data = CompoundData.fromNbt(tag.getCompound("NetMusicKuGouCdAddon"));
+        return new CdAddonData(data.fileHash, data.albumId, data.burnTime, data.lrc, data.lrcTrans);
     }
 
-    /**
-     * 用 mutator 函数修改 CD 上的 {@link CdAddonData}，整体写回。
-     * <p>示例：{@code updateData(cd, d -> d.withFileHash(hash).withAlbumId(albumId))}</p>
-     */
     public static void updateData(ItemStack cd, UnaryOperator<CdAddonData> mutator) {
         if (!isMusicCd(cd) || mutator == null) {
             return;
@@ -47,13 +32,50 @@ public final class CdNbtHelper {
         CdAddonData current = getData(cd);
         CdAddonData updated = mutator.apply(current);
         if (updated != null) {
-            cd.set(InitDataComponent.CD_ADDON_DATA, updated);
+            CompoundTag tag = cd.getOrCreateTag();
+            CompoundData d = new CompoundData(updated.fileHash(), updated.albumId(), updated.burnTime(), updated.lrc(), updated.lrcTrans());
+            d.toNbt(tag);
         }
     }
 
-    /**
-     * 把识别信息写到 CD 的 DataComponent。如果 fileHash 为空则不写。
-     */
+    private static class CompoundData {
+        final String fileHash;
+        final String albumId;
+        final long burnTime;
+        final String lrc;
+        final String lrcTrans;
+
+        CompoundData(String fileHash, String albumId, long burnTime, String lrc, String lrcTrans) {
+            this.fileHash = fileHash;
+            this.albumId = albumId;
+            this.burnTime = burnTime;
+            this.lrc = lrc;
+            this.lrcTrans = lrcTrans;
+        }
+
+        static CompoundData fromNbt(CompoundTag t) {
+            return new CompoundData(
+                    t.getString("fileHash"),
+                    t.getString("albumId"),
+                    t.getLong("burnTime"),
+                    t.getString("lrc"),
+                    t.getString("lrcTrans")
+            );
+        }
+
+        void toNbt(CompoundTag tag) {
+            CompoundData d = fromNbt(tag.getCompound("NetMusicKuGouCdAddon"));
+            CompoundData updated = new CompoundData(fileHash, albumId, burnTime, lrc, lrcTrans);
+            CompoundTag newTag = new CompoundTag();
+            newTag.putString("fileHash", updated.fileHash);
+            newTag.putString("albumId", updated.albumId);
+            newTag.putLong("burnTime", updated.burnTime);
+            newTag.putString("lrc", updated.lrc);
+            newTag.putString("lrcTrans", updated.lrcTrans);
+            tag.put("NetMusicKuGouCdAddon", newTag);
+        }
+    }
+
     public static void writeOriginalInfo(ItemStack cd, String fileHash, String albumId) {
         if (!isMusicCd(cd) || fileHash == null || fileHash.isEmpty()) {
             return;
@@ -67,9 +89,6 @@ public final class CdNbtHelper {
         ));
     }
 
-    /**
-     * 读取 CD 上记录的原曲识别信息。空时返回 {@link Optional#empty()}。
-     */
     public static Optional<CdAddonData> readOriginalInfo(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return Optional.empty();
@@ -81,9 +100,6 @@ public final class CdNbtHelper {
         return Optional.of(data);
     }
 
-    /**
-     * 刷新 CD 上的 songUrl 字段。
-     */
     public static void updateSongUrl(ItemStack cd, String newUrl) {
         if (!isMusicCd(cd) || newUrl == null || newUrl.isEmpty()) {
             return;
@@ -96,9 +112,6 @@ public final class CdNbtHelper {
         ItemMusicCD.setSongInfo(info, cd);
     }
 
-    /**
-     * 从 CD 上读取当前 songUrl
-     */
     public static String readSongUrl(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;
@@ -107,11 +120,6 @@ public final class CdNbtHelper {
         return info == null ? null : info.songUrl;
     }
 
-    /**
-     * 把 LRC 文本写到 CD DataComponent（烧录时用）。
-     * <p>这里存的是 LRC 原始文本，不是解析后的结构。客户端拿到后再用
-     * {@code LrcConverter} 解析，这样可以避免 LRC 解析逻辑被版本化到 NBT 上造成兼容性问题。</p>
-     */
     public static void writeLyric(ItemStack cd, String lrcText, String songName) {
         if (!isMusicCd(cd) || lrcText == null || lrcText.isEmpty()) {
             return;
@@ -123,7 +131,6 @@ public final class CdNbtHelper {
                 lrcText,
                 d.lrcTrans()
         ));
-        // songName 仍然存到 ItemMusicCD 自带的 SongInfo 字段
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info != null && songName != null && !songName.isEmpty()) {
             info.songName = songName;
@@ -131,9 +138,6 @@ public final class CdNbtHelper {
         }
     }
 
-    /**
-     * 读取 CD 上的 LRC 文本和歌曲名。没有 LRC 则返回 null。
-     */
     public static Lyric readLyric(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;
@@ -142,7 +146,6 @@ public final class CdNbtHelper {
         if (!data.hasLrc()) {
             return null;
         }
-        // songName 从父 mod 的 SongInfo 拿
         String song = null;
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info != null) {
@@ -151,9 +154,6 @@ public final class CdNbtHelper {
         return new Lyric(data.lrc(), song);
     }
 
-    /**
-     * CD 上记录的 LRC 文本 + 歌曲名
-     */
     public static final class Lyric {
         public final String lrcText;
         public final String songName;
@@ -164,9 +164,6 @@ public final class CdNbtHelper {
         }
     }
 
-    /**
-     * 写入翻译 JSON 文本（酷狗 KRC language 字段解码后的 JSON 字符串）到 CD DataComponent。
-     */
     public static void writeLyricTranslation(ItemStack cd, String transJson) {
         if (!isMusicCd(cd) || transJson == null || transJson.isEmpty()) {
             return;
@@ -180,13 +177,80 @@ public final class CdNbtHelper {
         ));
     }
 
-    /**
-     * 读取 CD 上的翻译 JSON 文本。没有则返回 null。
-     */
     public static String readLyricTranslation(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;
         }
         return getData(cd).lrcTrans();
+    }
+
+    /**
+     * 逐曲酷狗元数据列表（用于 netMusicList 的「音乐列表」物品，一张列表CD 可含多首酷狗歌）。
+     * <p>
+     * 顶层 {@code NetMusicKuGouCdAddon} 只能存「一首歌」的信息，对多曲列表 CD 会互相覆盖；
+     * 这里按每首歌的 {@code songUrl} 索引各自的 fileHash/albumId/歌词，播放时由
+     * {@link #getSongAddon(ItemStack, String)} 取回对应那首歌的元数据。
+     */
+    private static final String SONGS_KEY = "NetMusicKuGouSongs";
+
+    /**
+     * 把一首歌的酷狗元数据写入（或更新）逐曲列表，按 {@code url} 去重。
+     *
+     * @param url 该歌的 {@code ItemMusicCD.SongInfo.songUrl}（酷狗真实直链，唯一标识一首歌）
+     */
+    public static void appendSongAddon(ItemStack cd, String url, String fileHash, String albumId,
+                                       String lrc, String lrcTrans) {
+        if (!isMusicCd(cd) || url == null || url.isEmpty()) {
+            return;
+        }
+        CompoundTag tag = cd.getOrCreateTag();
+        ListTag list = tag.getList(SONGS_KEY, Tag.TAG_COMPOUND);
+        for (int i = 0; i < list.size(); i++) {
+            CompoundTag e = list.getCompound(i);
+            if (url.equals(e.getString("url"))) {
+                e.putString("fileHash", fileHash == null ? "" : fileHash);
+                e.putString("albumId", albumId == null ? "" : albumId);
+                e.putLong("burnTime", System.currentTimeMillis());
+                e.putString("lrc", lrc == null ? "" : lrc);
+                e.putString("lrcTrans", lrcTrans == null ? "" : lrcTrans);
+                tag.put(SONGS_KEY, list);
+                return;
+            }
+        }
+        CompoundTag e = new CompoundTag();
+        e.putString("url", url);
+        e.putString("fileHash", fileHash == null ? "" : fileHash);
+        e.putString("albumId", albumId == null ? "" : albumId);
+        e.putLong("burnTime", System.currentTimeMillis());
+        e.putString("lrc", lrc == null ? "" : lrc);
+        e.putString("lrcTrans", lrcTrans == null ? "" : lrcTrans);
+        list.add(e);
+        tag.put(SONGS_KEY, list);
+    }
+
+    /**
+     * 按 {@code url} 取回某首歌的酷狗元数据；不存在时返回 {@link CdAddonData#EMPTY}。
+     */
+    public static CdAddonData getSongAddon(ItemStack cd, String url) {
+        if (!isMusicCd(cd) || url == null || url.isEmpty()) {
+            return CdAddonData.EMPTY;
+        }
+        CompoundTag tag = cd.getOrCreateTag();
+        if (!tag.contains(SONGS_KEY)) {
+            return CdAddonData.EMPTY;
+        }
+        ListTag list = tag.getList(SONGS_KEY, Tag.TAG_COMPOUND);
+        for (int i = 0; i < list.size(); i++) {
+            CompoundTag e = list.getCompound(i);
+            if (url.equals(e.getString("url"))) {
+                return new CdAddonData(
+                        e.getString("fileHash"),
+                        e.getString("albumId"),
+                        e.getLong("burnTime"),
+                        e.getString("lrc"),
+                        e.getString("lrcTrans"));
+            }
+        }
+        return CdAddonData.EMPTY;
     }
 }

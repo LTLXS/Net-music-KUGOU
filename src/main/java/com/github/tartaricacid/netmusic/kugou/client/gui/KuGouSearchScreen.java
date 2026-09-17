@@ -40,7 +40,7 @@ public class KuGouSearchScreen extends Screen {
     private int scrollOffset = 0;
 
     public KuGouSearchScreen(Screen parent, String initialQuery, Consumer<SearchResult> onSelect) {
-        super(Component.literal("酷狗音乐搜索"));
+        super(Component.translatable("netmusic_kugou.search.title"));
         this.parent = parent;
         this.onSelect = onSelect;
     }
@@ -51,13 +51,13 @@ public class KuGouSearchScreen extends Screen {
         int boxX = (this.width - (boxWidth + SEARCH_BUTTON_WIDTH + 4)) / 2;
         int boxY = 24;
 
-        this.searchBox = new EditBox(this.font, boxX, boxY, boxWidth, SEARCH_HEIGHT, Component.literal("搜索框"));
+        this.searchBox = new EditBox(this.font, boxX, boxY, boxWidth, SEARCH_HEIGHT, Component.translatable("netmusic_kugou.search.box_hint"));
         this.searchBox.setBordered(true);
         this.searchBox.setTextColor(0xFFFFFF);
         this.addWidget(this.searchBox);
         this.setInitialFocus(this.searchBox);
 
-        this.searchButton = Button.builder(Component.literal("搜索"), button -> runSearch())
+        this.searchButton = Button.builder(Component.translatable("netmusic_kugou.gui.search"), button -> runSearch())
                 .pos(boxX + boxWidth + 4, boxY)
                 .size(SEARCH_BUTTON_WIDTH, SEARCH_HEIGHT)
                 .build();
@@ -76,16 +76,15 @@ public class KuGouSearchScreen extends Screen {
                 .build();
         this.addRenderableWidget(this.nextButton);
 
-        this.selectButton = Button.builder(Component.literal("选择"), button -> applySelection())
+        this.selectButton = Button.builder(Component.translatable("netmusic_kugou.search.select"), button -> applySelection())
                 .pos((this.width - 80) / 2, buttonY)
                 .size(80, 20)
                 .build();
         this.addRenderableWidget(this.selectButton);
 
-        // VIP状态检查按钮
         int vipBtnX = 10;
         int vipBtnY = buttonY + 24;
-        this.vipCheckButton = Button.builder(Component.literal("查看VIP状态"), button -> checkVipStatus())
+        this.vipCheckButton = Button.builder(Component.translatable("netmusic_kugou.search.check_vip"), button -> checkVipStatus())
                 .pos(vipBtnX, vipBtnY)
                 .size(90, 20)
                 .build();
@@ -94,10 +93,9 @@ public class KuGouSearchScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(graphics, mouseX, mouseY, partialTick);
+        this.renderBackground(graphics);
 
         // ⚠️ 列表顶部必须在搜索框下方，避免与搜索栏重叠
-        // 搜索框位于 y=24, 高度20px → 搜索框底部约 y=44, 加上间距后列表从 y=52 开始
         int listTop = Math.max(52, this.height / 2 - 120);
         int listBottom = this.height - 60;
         int listWidth = this.width - 20;
@@ -146,13 +144,12 @@ public class KuGouSearchScreen extends Screen {
             graphics.drawCenteredString(this.font, this.status, this.width / 2, 56, 0xCCCCCC);
         }
 
-        String pageStr = String.format("第 %d 页", currentPage);
+        String pageStr = Component.translatable("netmusic_kugou.search.page", currentPage).getString();
         graphics.drawCenteredString(this.font, pageStr, this.width / 2, this.height - 20, 0xFFFFFF);
 
-        String loginStatus = KuGouConfig.userid.isEmpty() ? "未登录" : "已登录 (" + KuGouConfig.userid + ")";
-        graphics.drawString(this.font, "状态: " + loginStatus, 10, this.height - 35, 0xAAAAAA, false);
+        String loginStatus = KuGouConfig.userid.isEmpty() ? Component.translatable("netmusic_kugou.status.not_logged_in").getString() : Component.translatable("netmusic_kugou.status.logged_in", KuGouConfig.userid).getString();
+        graphics.drawString(this.font, Component.translatable("netmusic_kugou.status.label").getString() + loginStatus, 10, this.height - 35, 0xAAAAAA, false);
 
-        // VIP 状态文本（多行）
         if (vipStatusText != null && !vipStatusText.isEmpty()) {
             String[] lines = vipStatusText.split("\n");
             int vipY = this.height - 55;
@@ -229,7 +226,7 @@ public class KuGouSearchScreen extends Screen {
         if (!keyword.isEmpty()) {
             this.isSearching = true;
             this.searching = true;
-            this.status = Component.literal("正在搜索...");
+            this.status = Component.translatable("netmusic_kugou.search.searching");
             this.searchResults.clear();
             this.selectedIndex = -1;
 
@@ -248,13 +245,13 @@ public class KuGouSearchScreen extends Screen {
                             }
                             this.searching = false;
                             this.isSearching = false;
-                            this.status = searchResults.isEmpty() ? Component.literal("未找到结果") : Component.empty();
+                            this.status = searchResults.isEmpty() ? Component.translatable("netmusic_kugou.search.no_result") : Component.empty();
                             this.scrollOffset = 0;
                         }).exceptionally(e -> {
                             KuGouLogger.error("===== KuGou Search Failed =====");
                             KuGouLogger.error("Error message: {}", e.getMessage());
                             e.printStackTrace();
-                            this.status = Component.literal("搜索失败: " + e.getMessage());
+                            this.status = Component.translatable("netmusic_kugou.search.failed", e.getMessage());
                             this.searching = false;
                             this.isSearching = false;
                             return null;
@@ -262,7 +259,7 @@ public class KuGouSearchScreen extends Screen {
             } catch (Exception e) {
                 KuGouLogger.error("===== KuGou Search Preparation Failed =====");
                 KuGouLogger.error("Error message: {}", e.getMessage());
-                this.status = Component.literal("搜索失败: " + e.getMessage());
+                this.status = Component.translatable("netmusic_kugou.search.failed", e.getMessage());
                 this.searching = false;
                 this.isSearching = false;
             }
@@ -284,30 +281,30 @@ public class KuGouSearchScreen extends Screen {
     private void checkVipStatus() {
         if (vipChecking) return;
         if (!KuGouConfig.isLoggedIn()) {
-            this.status = Component.literal("请先登录酷狗账号！");
-            vipStatusText = "未登录 - 无法查询VIP";
+            this.status = Component.translatable("netmusic_kugou.search.please_login");
+            vipStatusText = Component.translatable("netmusic_kugou.search.vip_not_logged").getString();;
             return;
         }
         vipChecking = true;
-        this.status = Component.literal("正在查询VIP状态...");
+        this.status = Component.translatable("netmusic_kugou.search.querying_vip");
         vipStatusText = "";
 
         KuGouApiClient.getVipInfo()
             .thenAccept(json -> {
                 vipStatusText = KuGouApiClient.parseVipStatus(json);
                 if (vipStatusText.contains("已开通") || vipStatusText.contains("✓")) {
-                    this.status = Component.literal("✓ VIP状态正常");
+                    this.status = Component.translatable("netmusic_kugou.search.vip_ok");
                 } else if (vipStatusText.contains("未开通") || vipStatusText.contains("无VIP")) {
-                    this.status = Component.literal("⚠ 无VIP - 付费歌曲无法播放");
+                    this.status = Component.translatable("netmusic_kugou.search.vip_none");
                 } else {
-                    this.status = Component.literal("查询完成");
+                    this.status = Component.translatable("netmusic_kugou.search.query_done");
                 }
                 vipChecking = false;
             })
             .exceptionally(e -> {
-                String errMsg = e.getMessage() != null ? e.getMessage() : "未知错误";
-                vipStatusText = "查询失败: " + errMsg;
-                this.status = Component.literal("查询失败: " + errMsg);
+                String errMsg = e.getMessage() != null ? e.getMessage() : Component.translatable("netmusic_kugou.error.default").getString();
+                vipStatusText = Component.translatable("netmusic_kugou.vip.query_failed", errMsg).getString();;
+                this.status = Component.translatable("netmusic_kugou.search.failed", errMsg);
                 vipChecking = false;
                 return null;
             });
@@ -343,14 +340,13 @@ public class KuGouSearchScreen extends Screen {
      * {@code gameRenderer.processBlurEffect()} 把世界模糊化，导致弹窗内容被糊。
      * 覆盖为 no-op 关闭模糊。
      */
-    @Override
-    protected void renderBlurredBackground(float partialTick) {
+    protected void renderBlurredBackground(GuiGraphics graphics, float partialTick) {
     }
 
     public void setSearchResults(java.util.List<SearchResult> results) {
         this.searchResults.clear();
         this.searchResults.addAll(results);
-        this.status = searchResults.isEmpty() ? Component.literal("未找到结果") : Component.empty();
+        this.status = searchResults.isEmpty() ? Component.translatable("netmusic_kugou.search.no_result") : Component.empty();
         this.scrollOffset = 0;
     }
 
@@ -367,6 +363,24 @@ public class KuGouSearchScreen extends Screen {
             this.duration = duration;
             this.fileHash = fileHash;
             this.albumId = albumId;
+        }
+
+        public static SearchResult fromBuf(net.minecraft.network.FriendlyByteBuf buf) {
+            return new SearchResult(
+                    buf.readUtf(),
+                    buf.readUtf(),
+                    buf.readVarInt(),
+                    buf.readUtf(),
+                    buf.readUtf()
+            );
+        }
+
+        public static void toBuf(SearchResult result, net.minecraft.network.FriendlyByteBuf buf) {
+            buf.writeUtf(result.songName != null ? result.songName : "");
+            buf.writeUtf(result.singerName != null ? result.singerName : "");
+            buf.writeVarInt(result.duration);
+            buf.writeUtf(result.fileHash != null ? result.fileHash : "");
+            buf.writeUtf(result.albumId != null ? result.albumId : "");
         }
     }
 }

@@ -1,4 +1,5 @@
 package com.github.tartaricacid.netmusic.kugou.api;
+import net.minecraft.network.chat.Component;
 
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfig;
 import com.github.tartaricacid.netmusic.kugou.util.HttpUtils;
@@ -13,15 +14,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-/**
- * 酷狗概念版 VIP 领取 API
- * 参照 KuGou server/module/youth_day_vip.js 和 youth_day_vip_upgrade.js
- */
 public final class KuGouVipApi {
 
     private static final Gson GSON = new Gson();
 
-    /** 最后一次 VIP 领取操作的结果描述，供 UI 显示 */
     public static volatile String lastVipResultMessage = "";
 
     /**
@@ -45,7 +41,6 @@ public final class KuGouVipApi {
     /** 当前领取任务状态（线程间可见） */
     public static volatile ClaimStatus lastClaimStatus = ClaimStatus.NEVER_TRIED;
 
-    /** 上次领取尝试的日期（yyyy-MM-dd），用于跨日重置 */
     public static volatile String lastClaimDate = "";
 
     private static final String RECEIVE_VIP_URL =
@@ -56,13 +51,6 @@ public final class KuGouVipApi {
     private KuGouVipApi() {}
 
     /**
-     * 领取每日 VIP（概念版专属）
-     * 参照 KuGou server/module/youth_day_vip.js
-     *
-     * @param kugouId 酷狗用户 ID
-     * @return 是否领取成功
-     */
-    /**
      * 领取酷狗"概念版"每日 VIP。
      * <p>
      * 调用 kugouvip.kugou.com /v1/youth_day_vip/recv_vip_listen_song。
@@ -72,7 +60,6 @@ public final class KuGouVipApi {
      * @return true=本次真正领到了新 VIP；false=失败、已领过、参数错误等
      */
     public static CompletableFuture<Boolean> receiveDailyVip(String kugouId, String receiveDay) {
-        // 用 String[0] 包装：参数 receiveDay 既要传入 lambda、又要被 lambda 内重新赋值。
         // Java 要求 lambda 引用的本地变量是 effectively final，所以用单元素数组绕过。
         final String[] dayRef = { receiveDay };
         return CompletableFuture.supplyAsync(() -> {
@@ -87,7 +74,6 @@ public final class KuGouVipApi {
                     return false;
                 }
 
-                // 解析业务参数
                 long uid = parseLongSafe(kugouId);
                 if (uid <= 0) {
                     KuGouLogger.warn("[NetMusicKuGou] receiveDailyVip invalid kugouId: {}", kugouId);
@@ -96,11 +82,9 @@ public final class KuGouVipApi {
                     return false;
                 }
 
-                // 优先使用 server 时区的"今天"；如果调用方未传则取本地
                 if (dayRef[0] == null || dayRef[0].isEmpty()) {
                     dayRef[0] = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
                 }
-                // 业务参数：id=90139（概念版 VIP 每日领取 source_id）
                 String sourceId = "90139";
 
                 Map<String, Object> params = new LinkedHashMap<>();
@@ -131,9 +115,7 @@ public final class KuGouVipApi {
                 headers.put("kg-thash", "5d816a0");
                 headers.put("kg-rec", "1");
                 headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
-                // 不发送 Cookie header (KuGou 不发送)
 
-                // params 全部在 URL query, body 为空 (跟 KuGou useAxios 一致)
                 HttpUtils.HttpResponse response = HttpUtils.postRaw(RECEIVE_VIP_URL, headers, params, null);
 
                 String respBody = response.body != null ? response.body : "";
@@ -150,8 +132,7 @@ public final class KuGouVipApi {
                 int errorCode = root.has("error_code") ? root.get("error_code").getAsInt() : 0;
 
                 if (status == 1) {
-                    // ✅ 真正成功领取
-                    lastVipResultMessage = "VIP领取成功！";
+                    lastVipResultMessage = Component.translatable("netmusic_kugou.vip.claim_success").getString();
                     KuGouLogger.info("[NetMusicKuGou] Receive daily VIP: success");
                     lastClaimStatus = ClaimStatus.SUCCESS;
                     markAttemptedToday();
@@ -162,11 +143,11 @@ public final class KuGouVipApi {
                 // error_code=20002 = 错误请求格式
                 if (errorCode == 131001 || errorCode == 20002) {
                     java.time.LocalDate tomorrow = LocalDate.now().plusDays(1);
-                    lastVipResultMessage = "今日VIP领取已达上限，将于 " + tomorrow + " 00:00 后重置";
+                    lastVipResultMessage = Component.translatable("netmusic_kugou.vip.daily_limit", tomorrow).getString();
                     KuGouLogger.info("[NetMusicKuGou] Receive daily VIP: daily limit reached ({})", errorCode);
                     lastClaimStatus = ClaimStatus.ALREADY_CLAIMED;
                     markAttemptedToday();
-                    return false;  // 不是成功，VIP没有续期
+                    return false;
                 }
 
                 // ❌ 其他失败 - 使用错误码解释器
@@ -186,13 +167,6 @@ public final class KuGouVipApi {
         });
     }
 
-    /**
-     * 升级畅听 VIP 奖励（概念版专属）
-     * 参照 KuGou server/module/youth_day_vip_upgrade.js
-     *
-     * @param kugouId 酷狗用户 ID
-     * @return 是否升级成功
-     */
     public static CompletableFuture<Boolean> upgradeVipReward(String kugouId) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -235,9 +209,7 @@ public final class KuGouVipApi {
                 headers.put("kg-thash", "5d816a0");
                 headers.put("kg-rec", "1");
                 headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
-                // 不发送 Cookie header (KuGou 不发送)
 
-                // params 全部在 URL query, body 为空 (跟 KuGou useAxios 一致)
                 HttpUtils.HttpResponse response = HttpUtils.postRaw(UPGRADE_VIP_URL, headers, params, null);
 
                 String respBody = response.body != null ? response.body : "";
@@ -251,8 +223,6 @@ public final class KuGouVipApi {
                 int status = root.has("status") ? root.get("status").getAsInt() : -1;
                 int errorCode = root.has("error_code") ? root.get("error_code").getAsInt() : 0;
 
-                // ✅ status=1 真正成功
-                // ✅ error_code=297002 = 今日已升级(等价成功,与 KuGou 一致)
                 // error_code=20002 = 错误请求格式
                 if (status == 1 || errorCode == 297002) {
                     lastVipResultMessage = (status == 1)
@@ -291,19 +261,15 @@ public final class KuGouVipApi {
     public static boolean shouldRetryToday() {
         String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         if (!today.equals(lastClaimDate)) {
-            return true;  // 跨日或无记录时允许重试
+            return true;
         }
         // 请求进行中时不重复触发
         if (lastClaimStatus == ClaimStatus.IN_PROGRESS) {
             return false;
         }
-        // 当天 SUCCESS 后停止重试，其他状态允许重试
         return lastClaimStatus != ClaimStatus.SUCCESS;
     }
 
-    /**
-     * 把指定日期写入到 lastClaimDate（用于跨日判定）。
-     */
     private static void markAttemptedToday() {
         lastClaimDate = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
     }
@@ -325,9 +291,6 @@ public final class KuGouVipApi {
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
     }
 
-    /**
-     * 安全解析 long，无法解析返回 0。
-     */
     private static long parseLongSafe(String s) {
         if (s == null) return 0;
         try {

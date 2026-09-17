@@ -21,25 +21,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.function.Function;
 
-/**
- * 酷狗专属音频流处理器（高优先级，比父模组的 NetEaseHttpHandler / DirectHttpHandler 先跑）。
- * <p>
- * <b>为什么需要它而不是复用 DirectHttpHandler？</b>
- * <p>
- * DirectHttpHandler 给所有 HTTP 请求硬编码用了 {@code NetEaseMusic.getUserAgent()}（网易云专属 UA，
- * 形如 "CloudMusic/1.2.3 ..."），把这个 UA 发去酷狗 fs.youthandroid2.kugou.com CDN：
- * <ol>
- *   <li>命中边缘热点资源 → 放行，返回 200 audio/mpeg（这时能播，所以用户感觉"有时候可以播"）</li>
- *   <li>冷源回源 / 边缘节点开启严格校验 → 直接 403 或返回 200 text/html 错误页（AudioSystem 识别不了格式，
- *       抛 UnsupportedAudioFileException，NetMusicSound 降级用 error.ogg 兜底，实际静默没声音）</li>
- * </ol>
- * 本 Handler 只拦截 host 含 {@code kugou.com} 的 URL，把 Request 伪装成官方酷狗 Android 客户端
- * （clientver=11430，和 KuGouApiClient / EchoMusic 的签名、参数选择保持一致），避免被 CDN 风控拦截。
- * <p>
- * <b>注册时机</b>：必须在 AudioStreamHandlerManager.init() 完成 {@code HANDLERS.sort} + ImmutableList.copyOf
- * <b>之前</b>调用 {@code registerHandler}，否则会被拒绝。NetMusicKuGou 在 {@code AddReloadListenerEvent}
- * / {@code ClientModConstructorEvent} 早期阶段注册即可。
- */
 public class KuGouAudioStreamHandler implements IAudioStreamHandler {
 
     public static final String KUGOU_USER_AGENT =
@@ -50,7 +31,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
             "audio/webm,audio/ogg,audio/wav,audio/mpeg,audio/mp3,audio/mp4,audio/flac,audio/aac,audio/*;q=0.9,*/*;q=0.8";
     public static final String KUGOU_ACCEPT_LANG = "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7";
 
-    /** 单个分片的读超时，避免卡死音频下载线程。分片失败 ChunkedAudioStream 会重试，这里别给太长。 */
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(30);
 
     @Override
@@ -59,7 +39,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
         String host = url.getHost();
         if (host == null) return false;
         String protocol = url.getProtocol();
-        // 只拦截 kugou.com（含所有子域：fs.youthandroid2.kugou.com / webfs.kugou.com / ...）
         return (host.equalsIgnoreCase("kugou.com") || host.endsWith(".kugou.com"))
                 && ("http".equalsIgnoreCase(protocol) || "https".equalsIgnoreCase(protocol));
     }
@@ -79,14 +58,11 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
                         .header(HttpHeaders.REFERER, KUGOU_REFERER)
                         .header(HttpHeaders.ACCEPT, KUGOU_ACCEPT)
                         .header(HttpHeaders.ACCEPT_LANGUAGE, KUGOU_ACCEPT_LANG)
-                        // Range 头是 ChunkedAudioStream 的核心：支持分片 + 断点续传 + 失败重试
                         .header(HttpHeaders.RANGE, "bytes=%d-".formatted(start))
                         .GET();
                 return b.build();
             };
 
-            // 复用父模组 ChunkedAudioStream（分片下载、失败重试）+ MusicBufferedInputStream（mark/reset）
-            // + Mp3Util.skipID3（跳过 ID3v2 头避免 AudioSystem 误判）。所有成熟逻辑直接复用，只换 Request 头。
             ChunkedAudioStream stream = new ChunkedAudioStream(requestFactory);
             BufferedInputStream bufferedInputStream = new MusicBufferedInputStream(stream);
             Mp3Util.skipID3(bufferedInputStream);
@@ -102,13 +78,10 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
                     urlPreview);
             return ais;
         } catch (UnsupportedAudioFileException | IOException e) {
-            // ===== 播放失败一定打详细错误日志，别让它"静默失败"======
             long dt = System.currentTimeMillis() - t0;
             KuGouLogger.error(
                     "[KuGouAudio] Stream FAILED after {}ms: {} | url={}",
                     dt, e.getMessage(), urlPreview, e);
-            // 额外尝试一次 "HEAD" 拿状态码 / Content-Type，把真实 HTTP 错误原因写进日志，
-            // 方便用户回看"这次到底是 403 / 302 错页 / 400 / 5xx"。
             probeFailureReason(urlStr);
             throw e;
         } catch (Throwable t) {
@@ -145,7 +118,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
 
     @Override
     public int getPriority() {
-        // 比 NetEaseHttpHandler(10) 和 DirectHttpHandler(0) 都高，优先处理 *.kugou.com
         return 100;
     }
 }

@@ -1,58 +1,44 @@
 package com.github.tartaricacid.netmusic.kugou.network.message;
 
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
-import com.github.tartaricacid.netmusic.kugou.NetMusicKuGou;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.item.ItemMusicCD;
-import net.minecraft.network.RegistryFriendlyByteBuf;
-import net.minecraft.network.codec.ByteBufCodecs;
-import net.minecraft.network.codec.StreamCodec;
-import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
-import net.neoforged.neoforge.network.handling.IPayloadContext;
+import net.minecraftforge.network.NetworkEvent;
 
-/**
- * 客户端 → 服务端：把 fileHash / albumId 写进 CD 的 DataComponent。
- * <p>
- * 用法：在 SetMusicIDMessage（netmusic 自带）发完之后立刻发这个包，
- * 服务端会在玩家打开的容器 slot 0 找到刚烧好的 CD 并附加识别信息。
- * 之所以要单独一个包，是因为我们不能改 netmusic 自带的 SetMusicIDMessage。
- */
+import java.util.function.Supplier;
+
 public record AddCdRefreshInfoMessage(
         String fileHash,
         String albumId
-) implements CustomPacketPayload {
+) {
 
-    public static final Type<AddCdRefreshInfoMessage> TYPE =
-            new Type<>(ResourceLocation.fromNamespaceAndPath(NetMusicKuGou.MOD_ID, "add_cd_refresh_info"));
-
-    public static final StreamCodec<RegistryFriendlyByteBuf, AddCdRefreshInfoMessage> STREAM_CODEC = StreamCodec.composite(
-            ByteBufCodecs.STRING_UTF8, AddCdRefreshInfoMessage::fileHash,
-            ByteBufCodecs.STRING_UTF8, AddCdRefreshInfoMessage::albumId,
-            AddCdRefreshInfoMessage::new
-    );
-
-    @Override
-    public Type<? extends CustomPacketPayload> type() {
-        return TYPE;
+    public static AddCdRefreshInfoMessage decode(FriendlyByteBuf buf) {
+        String fileHash = buf.readUtf();
+        String albumId = buf.readUtf();
+        return new AddCdRefreshInfoMessage(fileHash, albumId);
     }
 
-    public static void handle(AddCdRefreshInfoMessage msg, IPayloadContext context) {
-        if (!context.flow().isServerbound()) {
+    public static void encode(AddCdRefreshInfoMessage msg, FriendlyByteBuf buf) {
+        buf.writeUtf(msg.fileHash != null ? msg.fileHash : "");
+        buf.writeUtf(msg.albumId != null ? msg.albumId : "");
+    }
+
+    public static void handle(AddCdRefreshInfoMessage msg, Supplier<NetworkEvent.Context> ctx) {
+        if (ctx.get().getDirection() != net.minecraftforge.network.NetworkDirection.PLAY_TO_SERVER) {
             return;
         }
-        context.enqueueWork(() -> {
-            if (!(context.player() instanceof net.minecraft.server.level.ServerPlayer player)) {
-                return;
-            }
+        ctx.get().enqueueWork(() -> {
+            ServerPlayer player = (ServerPlayer) ctx.get().getSender();
+            if (player == null) return;
             if (msg.fileHash == null || msg.fileHash.isEmpty()) {
                 return;
             }
             AbstractContainerMenu menu = player.containerMenu;
-            // 取 slot 0 的 CD（刻录机的输入槽）。如果玩家没开刻录机，退而求其次用主手。
             ItemStack cd = ItemStack.EMPTY;
             if (menu != null && menu.slots.size() > 0) {
                 cd = menu.getSlot(0).getItem();
@@ -64,25 +50,17 @@ public record AddCdRefreshInfoMessage(
                 KuGouLogger.warn("AddCdRefreshInfoMessage: no music CD found in slot 0 / main hand, skipping");
                 return;
             }
-            // 防御一下：必须真的烧过（songUrl 非空）才写
             ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
             if (info == null || info.songUrl == null || info.songUrl.isEmpty()) {
                 KuGouLogger.warn("AddCdRefreshInfoMessage: CD in slot 0 has no songUrl yet, skipping");
                 return;
             }
             CdNbtHelper.writeOriginalInfo(cd, msg.fileHash, msg.albumId);
-
-            // 异步拉取歌词并写入 CD DataComponent（best-effort，不阻塞主流程）
             fetchAndStoreLyric(cd, msg);
         });
+        ctx.get().setPacketHandled(true);
     }
 
-    /**
-     * 异步拉取酷狗歌词并写入 CD DataComponent。
-     * <p>
-     * 流程：searchLyric(hash, keyword) → getLyric(id, accesskey) → writeLyric(cd)
-     * 任何步骤失败只记日志不抛异常，不影响主刻录流程。
-     */
     private static void fetchAndStoreLyric(ItemStack cd, AddCdRefreshInfoMessage msg) {
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info == null) return;
@@ -93,7 +71,7 @@ public record AddCdRefreshInfoMessage(
         String song = info.songName == null ? "" : info.songName;
         String keyword = (singer.isEmpty() ? "" : singer + " - ") + song;
         if (keyword.isEmpty()) return;
-        int duration = info.songTime * 1000; // 秒→毫秒
+        int duration = info.songTime * 1000;
 
         KuGouApiClient.searchLyricCandidates(msg.fileHash, keyword, duration, song, singer)
                 .thenAccept(list -> {
@@ -102,13 +80,10 @@ public record AddCdRefreshInfoMessage(
                                 msg.fileHash, keyword);
                         return;
                     }
-                    // krc 优先：只有 KRC 的 [language:base64] 字段才携带翻译/罗马音，lrc 不携带。
-                    // krc 全候选失败时回退 lrc（代价是丢翻译，但至少有歌词）。
                     KuGouApiClient.getLyricWithFallback(list, "krc")
                             .thenAccept(content -> {
                                 if (content != null && content.lyricContent != null && !content.lyricContent.isEmpty()) {
                                     CdNbtHelper.writeLyric(cd, content.lyricContent, song);
-                                    // 翻译只在 krc 路径下存在；lrc 回退时 languageJson 为 null，不写
                                     if (content.languageJson != null && !content.languageJson.isEmpty()) {
                                         CdNbtHelper.writeLyricTranslation(cd, content.languageJson);
                                     }

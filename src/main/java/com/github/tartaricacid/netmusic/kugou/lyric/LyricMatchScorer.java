@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.lyric;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 歌词候选本地匹配评分。移植自 EchoMusic 桌面端 {@code songMatching.ts}。
@@ -16,17 +17,10 @@ public final class LyricMatchScorer {
     private LyricMatchScorer() {
     }
 
-    /**
-     * 对单个候选打分。
-     *
-     * @param candSong       候选歌名（来自酷狗 candidates）
-     * @param candSinger     候选歌手
-     * @param candDurationMs 候选时长（毫秒），未知传 0
-     * @param querySong      实际播放歌名
-     * @param querySinger    实际播放歌手
-     * @param queryDurationMs 实际播放时长（毫秒），未知传 0
-     * @return 0..1 的匹配分，越高越匹配
-     */
+    private static final Pattern PAREN = Pattern.compile("\\([^)]*\\)");
+    private static final Pattern BRACKET = Pattern.compile("\\[[^]]*\\]");
+    private static final Pattern NON_ALNUM = Pattern.compile("[^\\p{L}\\p{N}]");
+
     public static double scoreCandidate(String candSong, String candSinger, int candDurationMs,
                                         String querySong, String querySinger, int queryDurationMs) {
         double title = titleScore(querySong, candSong);
@@ -39,9 +33,9 @@ public final class LyricMatchScorer {
     static String normalizeForCompare(String s) {
         if (s == null) return "";
         String n = s.toLowerCase();
-        n = n.replaceAll("\\([^)]*\\)", " ");
-        n = n.replaceAll("\\[[^]]*\\]", " ");
-        n = n.replaceAll("[^\\p{L}\\p{N}]", "");
+        n = PAREN.matcher(n).replaceAll(" ");
+        n = BRACKET.matcher(n).replaceAll(" ");
+        n = NON_ALNUM.matcher(n).replaceAll("");
         return n.trim();
     }
 
@@ -60,7 +54,6 @@ public final class LyricMatchScorer {
         String q = normalizeForCompare(queryArtist);
         if (q.isEmpty() || candArtist == null || candArtist.isEmpty()) return 0.5;
         if (q.equals(normalizeForCompare(candArtist))) return 1.0;
-        // 拆分需在归一化前进行：归一化会去掉分隔符
         String[] parts = candArtist.split("[/、&,]+");
         for (String p : parts) {
             String pp = normalizeForCompare(p);
@@ -79,7 +72,6 @@ public final class LyricMatchScorer {
         return 0.0;
     }
 
-    /** 字符级 Jaccard 相似度（code point 集合交/并）。 */
     private static double jaccardCharSimilarity(String a, String b) {
         if (a == null || b == null) return 0.0;
         Set<Integer> sa = toCodePointSet(a);

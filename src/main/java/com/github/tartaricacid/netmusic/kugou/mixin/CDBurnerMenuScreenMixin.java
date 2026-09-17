@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.mixin;
 
 import com.github.tartaricacid.netmusic.client.gui.CDBurnerMenuScreen;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.NetMusicKuGou;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
 import com.github.tartaricacid.netmusic.kugou.client.gui.KuGouSearchScreen;
@@ -55,15 +56,14 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         super(menu, inventory, title);
     }
 
-    @Inject(method = "init", at = @At("TAIL"), require = 0, remap = false)
+    @Inject(method = "m_7856_", at = @At("TAIL"), require = 0, remap = false)
     private void netmusickugou$init(CallbackInfo ci) {
         netmusickugou$initCommon();
     }
 
-    @Inject(method = "resize", at = @At("TAIL"), require = 0, remap = false)
+    @Inject(method = "m_6574_", at = @At("TAIL"), require = 0, remap = false)
     private void netmusickugou$resize(Minecraft minecraft, int width, int height, CallbackInfo ci) {
         if (netmusickugou$isQqModLoaded()) {
-            // 先清除旧的自己的按钮
             if (this.netmusickugou$providerButton != null) {
                 netmusickugou$removeWidget(this.netmusickugou$providerButton);
                 this.netmusickugou$providerButton = null;
@@ -72,11 +72,16 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 netmusickugou$removeWidget(this.netmusickugou$searchButton);
                 this.netmusickugou$searchButton = null;
             }
-            // 重置 hook 状态，立即重新 hook（QQ resize TAIL 应该已执行完）
             netmusickugou$qqHooked = false;
-            netmusickugou$hookQqButtons();
+            netmusickugou$hookAttempts = 0;
+            // 延迟到下一帧执行，避免与 QQ 模组 resize 注入的时序竞争
+            Minecraft.getInstance().execute(() -> {
+                if (!netmusickugou$qqHooked) {
+                    netmusickugou$hookQqButtons();
+                }
+            });
         } else {
-            netmusickugou$updateSearchUi();
+            netmusickugou$refreshSearchUi();
         }
     }
 
@@ -84,26 +89,29 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
     private Button netmusickugou$qqProviderButton;
     @Unique
     private boolean netmusickugou$qqHooked = false;
+    @Unique
+    private int netmusickugou$hookAttempts = 0;
 
     @Unique
     private void netmusickugou$initCommon() {
+        // 若未安装 QQ 模组但配置仍停留在 QQ，自动切回网易云，避免显示不可用的 QQ 渠道
+        if (!netmusickugou$isQqModLoaded() && ClientConfig.getProvider() == ProviderType.QQ) {
+            ClientConfig.setProvider(ProviderType.NETEASE);
+        }
+
         if (netmusickugou$isQqModLoaded()) {
-            // QQ 模组存在：每次 init 都重新 hook（super.init() clearWidgets 会清空之前的按钮）
-            // 用 priority=2000 确保在 QQ mod init TAIL 之后同步执行
+            // QQ 模组已加载：必须等 QQ 自己的 init/resize（把按钮加进界面）执行完后再替换，
+            // 否则本帧同步调用时按钮尚未生成，findQqButton 会找不到。用下一帧 execute 保证时序。
             netmusickugou$qqHooked = false;
-            netmusickugou$hookQqButtons();
-            // 兜底：若 hook 时找不到按钮（QQ mod TAIL 还没跑完），再延后一帧重试一次
-            if (!netmusickugou$qqHooked) {
-                Minecraft.getInstance().execute(() -> {
-                    if (!netmusickugou$qqHooked) {
-                        netmusickugou$hookQqButtons();
-                    }
-                });
-            }
+            netmusickugou$hookAttempts = 0;
+            Minecraft.getInstance().execute(() -> {
+                if (!netmusickugou$qqHooked) {
+                    netmusickugou$hookQqButtons();
+                }
+            });
             return;
         }
 
-        // QQ 模组不存在：自己创建按钮
         int rowY = this.topPos + 68;
         this.netmusickugou$providerButton = Button.builder(netmusickugou$getProviderLabel(),
                 button -> netmusickugou$toggleProvider())
@@ -112,34 +120,35 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 .build();
         this.addRenderableWidget(this.netmusickugou$providerButton);
 
-        this.netmusickugou$searchButton = Button.builder(Component.literal("搜索"),
+        this.netmusickugou$searchButton = Button.builder(Component.translatable("netmusic_kugou.gui.search"),
                 button -> netmusickugou$openSearch())
                 .pos(this.leftPos + 60, rowY)
                 .size(50, 20)
                 .build();
         this.addRenderableWidget(this.netmusickugou$searchButton);
 
-        netmusickugou$updateSearchUi();
+        netmusickugou$refreshSearchUi();
     }
 
     @Unique
     private boolean netmusickugou$isQqModLoaded() {
         try {
-            return net.neoforged.fml.ModList.get() != null
-                    && net.neoforged.fml.ModList.get().isLoaded("netmusiccanneedqq");
+            return net.minecraftforge.fml.ModList.get() != null
+                    && net.minecraftforge.fml.ModList.get().isLoaded("netmusiccanneedqq");
         } catch (Throwable t) {
             return false;
         }
     }
 
-    /** 反射找到 QQ 模组的两个按钮，移除后用自己的按钮替换 */
     @Unique
     private void netmusickugou$hookQqButtons() {
         if (netmusickugou$qqHooked) return;
-        netmusickugou$qqHooked = true;
+        if (netmusickugou$hookAttempts >= 20) {
+            KuGouLogger.warn("QQ hook exceeded max attempts, giving up");
+            return;
+        }
+        netmusickugou$hookAttempts++;
         try {
-            // 以我们自己的 ClientConfig 为权威（避免 QQ mod 默认 NETEASE 把我们也拉回去）
-            // 但只有当我们的 provider 不是 NETEASE 时才覆盖（首次进入时用默认值）
             ProviderType ours = ClientConfig.getProvider();
             ProviderType initial = ours;
             try {
@@ -147,7 +156,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 Object qqCurrent = qqConfig.getMethod("getProvider").invoke(null);
                 String qqName = qqCurrent != null ? qqCurrent.toString() : "NETEASE";
                 ProviderType qqValue = netmusickugou$fromQqProviderName(qqName);
-                // 如果我们当前是默认 NETEASE 且 QQ 模组是 QQ，则沿用 QQ 模组的（用户在 QQ 模组里切过）
                 if (ours == ProviderType.NETEASE && qqValue == ProviderType.QQ) {
                     initial = ProviderType.QQ;
                 }
@@ -157,7 +165,11 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             netmusickugou$syncQqProvider(initial);
             KuGouLogger.info("QQ hook: initial provider = {} (ours={}, qq mod synced)", initial, ours);
 
-            // 找 QQ 的 provider 按钮（label 为 "163" 或 "QQ"，或字段名含 provider）
+            // 若旧按钮对象已不在当前屏幕 widget 列表里（屏幕实例被复用时），重置字段
+            if (this.netmusickugou$providerButton != null && !netmusickugou$isWidgetInScreen(this.netmusickugou$providerButton)) {
+                this.netmusickugou$providerButton = null;
+            }
+
             Button qqProviderBtn = netmusickugou$findQqButton(new String[]{"163", "QQ"}, new String[]{"provider", "Provider"});
 
             if (qqProviderBtn != null) {
@@ -175,87 +187,63 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 KuGouLogger.info("QQ hook: replaced provider button at ({},{})", px, py);
             }
 
-            // 不替换 QQ 的搜索按钮，只在 KUGOU 模式时在 QQ 搜索按钮位置添加一个「酷狗搜索」按钮
-            // QQ/NETEASE 模式时不创建（避免遮挡 QQ 自带搜索按钮，导致 QQ 搜索功能失效）
-            Button qqSearchBtn = netmusickugou$findQqButton(new String[]{"搜索歌曲", "搜索"}, new String[]{"search", "Search"});
-            if (qqSearchBtn != null) {
-                KuGouLogger.info("QQ hook: found QQ search button visible={}, active={}, x={}, y={}, w={}, h={}",
-                        qqSearchBtn.visible, qqSearchBtn.active, qqSearchBtn.getX(), qqSearchBtn.getY(), qqSearchBtn.getWidth(), qqSearchBtn.getHeight());
-                // 强制根据我们当前的 provider 决定 QQ 搜索按钮的可见性
-                boolean showQqSearch = ClientConfig.getProvider() == ProviderType.QQ;
-                qqSearchBtn.visible = showQqSearch;
-                qqSearchBtn.active = showQqSearch;
-                KuGouLogger.info("QQ hook: forced QQ search button visible={}", showQqSearch);
+            netmusickugou$refreshSearchUi();
 
-                // 只在 KUGOU 模式时才创建「酷狗搜索」按钮覆盖 QQ 搜索按钮位置
-                // QQ/NETEASE 模式时不创建，避免遮挡 QQ 自带按钮
-                if (ClientConfig.getProvider() == ProviderType.KUGOU) {
-                    int sx = qqSearchBtn.getX(), sy = qqSearchBtn.getY();
-                    int sw = qqSearchBtn.getWidth(), sh = qqSearchBtn.getHeight();
-                    if (this.netmusickugou$searchButton != null) {
-                        netmusickugou$removeWidget(this.netmusickugou$searchButton);
-                    }
-                    this.netmusickugou$searchButton = Button.builder(
-                            Component.literal("酷狗搜索"),
-                            b -> netmusickugou$onSearchClicked())
-                            .pos(sx, sy).size(sw, sh).build();
-                    this.addRenderableWidget(this.netmusickugou$searchButton);
-                    KuGouLogger.info("QQ hook: added kugou search button at ({},{}) next to QQ search", sx, sy);
-                } else {
-                    // QQ/NETEASE 模式：不创建「酷狗搜索」按钮，确保 QQ 按钮可正常点击
-                    if (this.netmusickugou$searchButton != null) {
-                        netmusickugou$removeWidget(this.netmusickugou$searchButton);
-                        this.netmusickugou$searchButton = null;
-                    }
-                }
+            boolean ok = this.netmusickugou$providerButton != null
+                    && this.netmusickugou$searchButton != null;
+            if (ok) {
+                netmusickugou$qqHooked = true;
+                KuGouLogger.info("QQ hook succeeded after {} attempt(s)", netmusickugou$hookAttempts);
             } else {
-                KuGouLogger.warn("QQ hook: QQ search button NOT found!");
+                KuGouLogger.warn("QQ hook attempt {} failed (provider={}, search={}), will retry",
+                        netmusickugou$hookAttempts,
+                        this.netmusickugou$providerButton != null,
+                        this.netmusickugou$searchButton != null);
+                Minecraft.getInstance().execute(() -> {
+                    if (!netmusickugou$qqHooked) {
+                        netmusickugou$hookQqButtons();
+                    }
+                });
             }
-
-            netmusickugou$updateSearchUi();
         } catch (Throwable t) {
             KuGouLogger.warn("QQ hook failed: {}", t.getMessage());
+            Minecraft.getInstance().execute(() -> {
+                if (!netmusickugou$qqHooked) {
+                    netmusickugou$hookQqButtons();
+                }
+            });
         }
     }
 
-    /** 搜索按钮被点击时：如果是酷狗 provider，打开酷狗搜索；否则不拦截 */
     @Unique
     private void netmusickugou$onSearchClicked() {
         if (ClientConfig.getProvider() == ProviderType.KUGOU) {
             netmusickugou$openSearch();
         }
-        // QQ / NETEASE 时不拦截
     }
 
-    /** 反射从 Screen 的 renderables 和 children 列表移除一个 widget */
     @Unique
     private void netmusickugou$removeWidget(Object widget) {
         try {
-            // renderables 是 public 的，类型 List<GuiEventListener>
             this.renderables.remove(widget);
         } catch (Throwable ignored) {}
         try {
-            // children 是 private 的，用反射
-            java.lang.reflect.Field f = net.minecraft.client.gui.screens.Screen.class.getDeclaredField("children");
-            f.setAccessible(true);
-            java.util.List<?> children = (java.util.List<?>) f.get(this);
-            if (children != null) {
-                children.remove(widget);
-            }
-        } catch (Throwable t) {
-            KuGouLogger.warn("removeWidget children failed: {}", t.getMessage());
-        }
+            this.children().remove(widget);
+        } catch (Throwable ignored) {}
     }
 
-    /** 通过 label / 字段名 / renderables 列表三重匹配查找 QQ 按钮 */
+    @Unique
+    private boolean netmusickugou$isWidgetInScreen(Object widget) {
+        if (widget == null) return false;
+        return this.renderables.contains(widget) || this.children().contains(widget);
+    }
+
     @Unique
     private Button netmusickugou$findQqButton(String[] labels, String[] fieldNameHints) {
-        // 0) 优先按 label 匹配（最可靠，按钮的真实身份）
         Button labelHit = netmusickugou$scanAllButtons(labels, null);
         if (labelHit != null) {
             return labelHit;
         }
-        // 1) 字段名匹配（仅匹配 QQ 模组的字段，排除自己 netmusickugou$ 前缀）
         Class<?> c = this.getClass();
         while (c != null && c != Object.class) {
             for (java.lang.reflect.Field f : c.getDeclaredFields()) {
@@ -266,7 +254,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                         if (val instanceof Button) {
                             Button btn = (Button) val;
                             String fname = f.getName();
-                            // 排除自己模组的字段
                             if (fname.startsWith("netmusickugou$")) continue;
                             if (fieldNameHints != null) {
                                 for (String hint : fieldNameHints) {
@@ -285,10 +272,8 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         return null;
     }
 
-    /** 扫描所有按钮（字段 + renderables + children），按 label 匹配 */
     @Unique
     private Button netmusickugou$scanAllButtons(String[] labels, String[] ignored) {
-        // 遍历所有字段
         Class<?> c = this.getClass();
         while (c != null && c != Object.class) {
             for (java.lang.reflect.Field f : c.getDeclaredFields()) {
@@ -313,7 +298,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             }
             c = c.getSuperclass();
         }
-        // 兜底：扫描 renderables
         try {
             for (Object obj : this.renderables) {
                 if (obj instanceof Button) {
@@ -330,7 +314,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 }
             }
         } catch (Throwable ignored2) {}
-        // 兜底：扫描 children
         try {
             java.lang.reflect.Field fChildren = net.minecraft.client.gui.screens.Screen.class.getDeclaredField("children");
             fChildren.setAccessible(true);
@@ -363,12 +346,18 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
 
     @Unique
     private Component netmusickugou$getProviderLabel() {
-        return Component.literal(ClientConfig.getProvider().getDisplayName());
+        return ClientConfig.getProvider().getDisplayName();
     }
 
     @Unique
     private void netmusickugou$toggleProvider() {
-        ProviderType next = ClientConfig.getProvider().next();
+        ProviderType current = ClientConfig.getProvider();
+        ProviderType next;
+        if (netmusickugou$isQqModLoaded()) {
+            next = current.next();
+        } else {
+            next = (current == ProviderType.KUGOU) ? ProviderType.NETEASE : ProviderType.KUGOU;
+        }
         ClientConfig.setProvider(next);
         this.netmusickugou$lastKuGouResult = null;
         netmusickugou$syncQqProvider(next);
@@ -376,29 +365,9 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         if (this.netmusickugou$providerButton != null) {
             this.netmusickugou$providerButton.setMessage(label);
         }
-        // 同步设置 QQ 搜索按钮的可见性
-        netmusickugou$applyQqSearchVisibility(next);
-        netmusickugou$updateSearchUi();
+        netmusickugou$refreshSearchUi();
     }
 
-    /** 根据我们当前的 provider 直接控制 QQ 模组搜索按钮的 visible */
-    @Unique
-    private void netmusickugou$applyQqSearchVisibility(ProviderType ourType) {
-        if (!netmusickugou$isQqModLoaded()) return;
-        try {
-            Button qqSearchBtn = netmusickugou$findQqButton(new String[]{"搜索歌曲", "搜索"}, new String[]{"search", "Search"});
-            if (qqSearchBtn != null) {
-                boolean showQqSearch = ourType == ProviderType.QQ;
-                qqSearchBtn.visible = showQqSearch;
-                qqSearchBtn.active = showQqSearch;
-                KuGouLogger.info("applyQqSearchVisibility: provider={}, qqSearchBtn.visible={}", ourType, showQqSearch);
-            }
-        } catch (Throwable t) {
-            KuGouLogger.warn("applyQqSearchVisibility failed: {}", t.getMessage());
-        }
-    }
-
-    /** 切换酷狗状态时同步 QQ 模组的 ClientConfig */
     @Unique
     private void netmusickugou$syncQqProvider(ProviderType ourType) {
         if (!netmusickugou$isQqModLoaded()) return;
@@ -432,14 +401,22 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                 }));
     }
 
-    @Inject(method = "handleCraftButton", at = @At("HEAD"), cancellable = true, require = 0, remap = false)
+    @Inject(method = "handleCraftButton", at = @At("HEAD"), cancellable = true, require = 0)
     private void netmusickugou$handleCraftButton(CallbackInfo ci) {
         if (ClientConfig.getProvider() != ProviderType.KUGOU || this.netmusickugou$lastKuGouResult == null) {
+            // 冲突规避：装了网络音乐机时，保留酷狗按钮（否则无法搜索酷狗），
+            // 仅在选了酷狗源、但输入槽是普通 CD（非「音乐列表」物品）时给个烧多首的提示。
+            if (NetMusicListCompat.isNetMusicListLoaded() && ClientConfig.getProvider() == ProviderType.KUGOU) {
+                ItemStack in = this.getMenu().getSlot(0).getItem();
+                if (in != null && !in.isEmpty() && !NetMusicListCompat.isMusicListItem(in)) {
+                    this.tips = Component.translatable("netmusic_kugou.cd.use_list_cd_hint");
+                }
+            }
             return;
         }
 
         if (netmusickugou$burning) {
-            this.tips = Component.literal("正在获取歌曲信息，请稍候...");
+            this.tips = Component.translatable("netmusic_kugou.cd.fetching_info");
             ci.cancel();
             return;
         }
@@ -462,17 +439,12 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
         final KuGouSearchScreen.SearchResult result = this.netmusickugou$lastKuGouResult;
         final boolean readOnly = this.readOnlyButton != null && this.readOnlyButton.selected();
 
-        // ⚠️ 绝不允许在渲染线程里 .get() / 阻塞！并行获取 URL + 歌词，都拿到后再发包。
-        // ⚠️ 不要用 final XxxMixin self = this 这种写法：mixin 类不可 JVM 加载，
-        // 会被 Mixin 注册为 invalid class，lambda 捕获它会让目标类加载时崩溃。
         netmusickugou$burning = true;
-        this.tips = Component.literal("正在获取歌曲信息，请稍候...");
+        this.tips = Component.translatable("netmusic_kugou.cd.fetching_info");
 
-        // 构建 URL 获取 future（必须成功）
         CompletableFuture<String> urlFuture = KuGouApiClient.getSongUrl(result.fileHash, result.albumId)
                 .orTimeout(15, TimeUnit.SECONDS);
 
-        // 构建歌词获取 future（best-effort，失败不影响刻录）
         String keyword = result.singerName + " - " + result.songName;
         int durationMs = result.duration * 1000;
         CompletableFuture<String[]> lyricFuture = KuGouApiClient.searchLyricCandidates(
@@ -486,22 +458,20 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                     return null;
                 });
 
-        // 等两个都完成
         CompletableFuture.allOf(urlFuture, lyricFuture)
                 .whenComplete((v, throwable) -> Minecraft.getInstance().execute(() -> {
                     try {
                         if (throwable != null) {
                             KuGouLogger.error("Failed to get song info for KuGou burn", throwable);
-                            this.tips = Component.literal("获取歌曲信息失败: " + throwable.getMessage());
+                            this.tips = Component.translatable("netmusic_kugou.cd.fetch_failed", throwable.getMessage());
                             return;
                         }
                         String url = urlFuture.getNow(null);
                         if (url == null || url.isEmpty()) {
-                            this.tips = Component.literal("获取歌曲URL失败");
+                            this.tips = Component.translatable("netmusic_kugou.cd.url_failed");
                             return;
                         }
 
-                        // 歌词可能为 null（拉取失败或无歌词），不影响刻录
                         String[] lyricData = lyricFuture.getNow(null);
                         String lrc = (lyricData != null) ? lyricData[0] : null;
                         String lrcTrans = (lyricData != null && lyricData[1] != null) ? lyricData[1] : null;
@@ -517,12 +487,12 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
                         KuGouLogger.info("SetMusicIDMessage send: song={}, urlLen={}, prefix={}, lrc={}",
                                 result.songName, url.length(), urlPreview, lrc != null ? "yes" : "no");
 
-                        NetworkHandler.sendToServer(new SetMusicIDMessage(songInfo));
                         BurnDataCache.set(result.fileHash, result.albumId, lrc, lrcTrans);
+                        NetworkHandler.CHANNEL.sendToServer(new SetMusicIDMessage(songInfo));
                         KuGouLogger.info("KuGou song burned: {} (hash={}, lrc={})", result.songName, result.fileHash, lrc != null ? "yes" : "no");
 
                         this.netmusickugou$lastKuGouResult = null;
-                        this.tips = Component.literal("刻录成功");
+                        this.tips = Component.translatable("netmusic_kugou.cd.burn_success");
                     } finally {
                         netmusickugou$burning = false;
                     }
@@ -532,15 +502,67 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
     }
 
     @Unique
-    private void netmusickugou$updateSearchUi() {
+    private void netmusickugou$refreshSearchUi() {
         if (this.textField == null) {
             return;
         }
-        // 我们的搜索按钮：仅在 KUGOU 模式时显示（QQ 模式时让 QQ 自带搜索按钮接管）
-        if (this.netmusickugou$searchButton != null) {
-            boolean showSearch = ClientConfig.getProvider() == ProviderType.KUGOU;
-            this.netmusickugou$searchButton.visible = showSearch;
-            this.netmusickugou$searchButton.active = showSearch;
+
+        if (netmusickugou$isQqModLoaded()) {
+            Button qqSearchBtn = netmusickugou$findQqButton(new String[]{"搜索歌曲", "搜索"}, new String[]{"search", "Search"});
+            if (qqSearchBtn != null) {
+                boolean isQq = ClientConfig.getProvider() == ProviderType.QQ;
+                qqSearchBtn.visible = isQq;
+                qqSearchBtn.active = isQq;
+
+                if (ClientConfig.getProvider() == ProviderType.KUGOU) {
+                    // 若旧按钮对象已不在当前屏幕列表里（屏幕复用），重置并重新创建
+                    if (this.netmusickugou$searchButton != null && !netmusickugou$isWidgetInScreen(this.netmusickugou$searchButton)) {
+                        this.netmusickugou$searchButton = null;
+                    }
+                    if (this.netmusickugou$searchButton == null) {
+                        int sx, sy, sw, sh;
+                        if (qqSearchBtn != null) {
+                            sx = qqSearchBtn.getX();
+                            sy = qqSearchBtn.getY();
+                            sw = qqSearchBtn.getWidth();
+                            sh = qqSearchBtn.getHeight();
+                        } else if (this.netmusickugou$providerButton != null) {
+                            sx = this.netmusickugou$providerButton.getX() + this.netmusickugou$providerButton.getWidth() + 4;
+                            sy = this.netmusickugou$providerButton.getY();
+                            sw = 50;
+                            sh = 20;
+                            KuGouLogger.warn("Refresh UI: QQ search button not found, fallback next to provider button");
+                        } else {
+                            sx = this.leftPos + 60;
+                            sy = this.topPos + 68;
+                            sw = 50;
+                            sh = 20;
+                            KuGouLogger.warn("Refresh UI: neither QQ search nor provider button found, using default position");
+                        }
+                        this.netmusickugou$searchButton = Button.builder(
+                                Component.translatable("netmusic_kugou.cd.kugou_search"),
+                                b -> netmusickugou$onSearchClicked())
+                                .pos(sx, sy).size(sw, sh).build();
+                        this.addRenderableWidget(this.netmusickugou$searchButton);
+                        KuGouLogger.info("Refresh UI: added kugou search button at ({},{}) size {}x{}", sx, sy, sw, sh);
+                    }
+                    this.netmusickugou$searchButton.visible = true;
+                    this.netmusickugou$searchButton.active = true;
+                } else {
+                    if (this.netmusickugou$searchButton != null) {
+                        netmusickugou$removeWidget(this.netmusickugou$searchButton);
+                        this.netmusickugou$searchButton = null;
+                    }
+                }
+            } else {
+                KuGouLogger.warn("Refresh UI: QQ search button NOT found!");
+            }
+        } else {
+            if (this.netmusickugou$searchButton != null) {
+                boolean isKugou = ClientConfig.getProvider() == ProviderType.KUGOU;
+                this.netmusickugou$searchButton.visible = isKugou;
+                this.netmusickugou$searchButton.active = isKugou;
+            }
         }
     }
 }

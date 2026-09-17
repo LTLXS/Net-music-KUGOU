@@ -41,7 +41,6 @@ public final class LyricInjectCache {
         return CACHE.remove(pos);
     }
 
-    /** 清除指定位置的缓存 */
     public static void clear(BlockPos pos) {
         if (pos != null) {
             CACHE.remove(pos);

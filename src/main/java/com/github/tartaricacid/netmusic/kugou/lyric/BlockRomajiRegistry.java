@@ -41,13 +41,11 @@ public final class BlockRomajiRegistry {
         MAP.put(pos, romaji == null ? new Int2ObjectRBTreeMap<>() : romaji);
     }
 
-    /** 读取（peek，不消费）。pos 不存在时返回空 map（<b>非 null</b>，方便调用方统一判空）。 */
     public static Int2ObjectSortedMap<String> get(BlockPos pos) {
         if (pos == null) return null;
         return MAP.get(pos);
     }
 
-    /** 清理：TileEntity 停止播放时由 MusicPlayerRendererMixin 调。 */
     public static void remove(BlockPos pos) {
         if (pos != null) MAP.remove(pos);
     }

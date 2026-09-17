@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.mixin;
 
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.BurnDataCache;
 import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
@@ -42,8 +43,23 @@ public class CDBurnerMenuMixin {
                 return;
             }
 
-            // 写入原曲识别信息（供 UrlRefresher 续期用）
             CdNbtHelper.writeOriginalInfo(cd, fileHash, albumId);
+
+            // 逐曲写入：把酷狗元数据按 songUrl 索引进 CD。
+            // 列表CD（netMusicList 的「音乐列表」物品）可含多首酷狗歌，逐曲存储互不覆盖；
+            // 普通 CD 也写入一份，播放时优先按 url 取回、回退顶层，行为一致。
+            try {
+                ItemStack target = ((AbstractContainerMenu) (Object) this).getSlot(0).getItem();
+                if (!NetMusicListCompat.isMusicListItem(target)) {
+                    target = ((AbstractContainerMenu) (Object) this).getSlot(1).getItem();
+                }
+                if (target != null && !target.isEmpty() && CdNbtHelper.isMusicCd(target)
+                        && setSongInfo.songUrl != null && !setSongInfo.songUrl.isEmpty()) {
+                    CdNbtHelper.appendSongAddon(target, setSongInfo.songUrl, fileHash, albumId, lrc, lrcTrans);
+                }
+            } catch (Throwable ignored) {
+                KuGouLogger.warn("CDBurnerMenuMixin: appendSongAddon failed: {}", ignored.getMessage());
+            }
 
             // 同步写入歌词（已在客户端刻录时拉取完成）
             if (lrc != null && !lrc.isEmpty()) {
@@ -54,8 +70,6 @@ public class CDBurnerMenuMixin {
                 }
                 KuGouLogger.info("CDBurnerMenuMixin: lyric written at burn time ({} chars)", lrc.length());
 
-                // 解析后立即填入 KuGouDisplayCompat：让 NetMusicDisplay 在播放器第一次
-                // setPlayToClient 之前就能取到 LyricRecord（Create DisplayLink 在服务端
                 // 调 provideLine 时，setPlayToClient 不一定已被触发）。
                 try {
                     LrcConverter.KuGouLyricData lyricData = LrcConverter.toLyricData(lrc, lrcTrans, song);

@@ -1,4 +1,5 @@
 package com.github.tartaricacid.netmusic.kugou.api;
+import net.minecraft.network.chat.Component;
 
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfig;
 import com.github.tartaricacid.netmusic.kugou.util.HttpUtils;
@@ -33,11 +34,6 @@ public final class KuGouLoginApi {
 
     private KuGouLoginApi() {}
 
-    // ==================== 密码登录 ====================
-
-    /**
-     * 密码登录
-     */
     public static CompletableFuture<LoginResult> loginByPassword(String username, String password) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -50,7 +46,6 @@ public final class KuGouLoginApi {
                 long clientTimeMs = System.currentTimeMillis();
                 String randomKey = CryptoUtils.randomString(16).toLowerCase();
 
-                // AES 加密密码
                 String encryptData = GSON.toJson(new PwdEncrypt(password, clientTimeMs));
                 KuGouDeviceRegister.AesEncryptResult aesResult;
                 try {
@@ -59,11 +54,9 @@ public final class KuGouLoginApi {
                     return new LoginResult(false, "AES encrypt failed: " + e.getMessage());
                 }
 
-                // RSA 加密 key
                 String pkData = GSON.toJson(new PkEncrypt(clientTimeMs, randomKey));
                 String pk = KuGouDeviceRegister.cryptoRsaEncrypt(pkData);
 
-                // 构建请求参数
                 Map<String, Object> params = new LinkedHashMap<>();
                 params.put("plat", 1);
                 params.put("support_multi", 1);
@@ -75,7 +68,6 @@ public final class KuGouLoginApi {
                 params.put("params", aesResult.str);
                 params.put("pk", pk);
 
-                // 添加默认参数并签名
                 params.put("appid", KuGouSignature.APPID);
                 params.put("clientver", KuGouSignature.CLIENTVER);
                 params.put("clienttime", clientTimeMs / 1000);
@@ -84,7 +76,6 @@ public final class KuGouLoginApi {
                 params.put("uuid", "-");
                 params.put("signature", KuGouSignature.signatureAndroidParams(params, GSON.toJson(params)));
 
-                // 请求头
                 Map<String, String> headers = new LinkedHashMap<>();
                 headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
                 headers.put("x-router", "login.user.kugou.com");
@@ -119,8 +110,6 @@ public final class KuGouLoginApi {
     public static CompletableFuture<LoginResult> sendSmsCode(String mobile) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // 参照 KuGou server/module/captcha_sent.js
-                // POST http://login.user.kugou.com/v7/send_mobile_code
                 Map<String, Object> params = new LinkedHashMap<>();
                 params.put("businessid", 5);
                 params.put("mobile", mobile);
@@ -142,27 +131,26 @@ public final class KuGouLoginApi {
                 JsonObject root = GSON.fromJson(response.body, JsonObject.class);
                 int status = root.has("status") ? root.get("status").getAsInt() : -1;
                 if (status == 1) {
-                    return new LoginResult(true, "验证码已发送");
+                    return new LoginResult(true, Component.translatable("netmusic_kugou.login.sms_sent").getString());
                 }
                 // 友好的错误提示
                 String errMsg;
                 if (root.has("error_code")) {
                     String errCode = root.get("error_code").getAsString();
                     switch (errCode) {
-                        case "20010": errMsg = "手机号格式错误或不存在"; break;
-                        case "20011": errMsg = "该手机号未注册酷狗账号"; break;
-                        case "20020": errMsg = "发送频率过高，请稍后再试"; break;
-                        default: errMsg = "发送失败(错误码: " + errCode + ")";
+                        case "20010": errMsg = Component.translatable("netmusic_kugou.login.err_phone_format").getString(); break;
+                        case "20011": errMsg = Component.translatable("netmusic_kugou.login.err_phone_unregistered").getString(); break;
+                        case "20020": errMsg = Component.translatable("netmusic_kugou.login.err_send_freq").getString(); break;
+                        default: errMsg = Component.translatable("netmusic_kugou.login.err_send_failed", errCode).getString();
                     }
                 } else if (root.has("error_msg")) {
                     errMsg = root.get("error_msg").getAsString();
                 } else if (root.has("msg")) {
                     errMsg = root.get("msg").getAsString();
                 } else {
-                    // 显示原始响应帮助调试
                     String bodyPreview = response.body.length() > 150
                             ? response.body.substring(0, 150) + "..." : response.body;
-                    errMsg = "发送失败(status=" + status + ", 响应: " + bodyPreview + ")";
+                    errMsg = Component.translatable("netmusic_kugou.login.err_send_status", status, bodyPreview).getString();
                 }
                 return new LoginResult(false, errMsg);
             } catch (Exception e) {
@@ -196,10 +184,8 @@ public final class KuGouLoginApi {
                     return new LoginResult(false, "AES encrypt failed: " + e.getMessage());
                 }
 
-                // 手机号脱敏
                 String maskedMobile = mobile.substring(0, 2) + "*****" + mobile.substring(mobile.length() - 1);
 
-                // RSA 加密 key
                 String pkData = GSON.toJson(new PkEncrypt(dateTime, randomKey));
                 String pk = KuGouDeviceRegister.cryptoRsaEncrypt(pkData);
 
@@ -248,16 +234,9 @@ public final class KuGouLoginApi {
         });
     }
 
-    // ==================== 二维码登录 ====================
-
     private static final int QR_SRCAPPID = 2919;
     private static final String QR_CODE_URL_PREFIX = "https://h5.kugou.com/apps/loginQRCode/html/index.html?appid=" + KuGouSignature.APPID + "&";
 
-    /**
-     * 从酷狗服务器获取二维码 Key
-     * 参照 KuGou server/module/login_qr_key.js
-     * GET https://login-user.kugou.com/v2/qrcode
-     */
     public static CompletableFuture<QrKeyResult> fetchQrKey() {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -288,7 +267,6 @@ public final class KuGouLoginApi {
                 JsonObject root = GSON.fromJson(response.body, JsonObject.class);
                 int status = root.has("status") ? root.get("status").getAsInt() : -1;
 
-                // 酷狗返回 status=1 表示成功
                 if (status == 1 && root.has("data")) {
                     JsonObject data = root.getAsJsonObject("data");
                     String qrcode = data.has("qrcode") ? data.get("qrcode").getAsString()
@@ -298,7 +276,7 @@ public final class KuGouLoginApi {
                 }
 
                 String msg = root.has("error_msg") ? root.get("error_msg").getAsString()
-                        : ("获取二维码失败(status=" + status + ")");
+                        : Component.translatable("netmusic_kugou.login.qr_status_failed", status).getString();
                 return new QrKeyResult(null, msg);
             } catch (Exception e) {
                 return new QrKeyResult(null, "QR key error: " + e.getMessage());
@@ -306,11 +284,6 @@ public final class KuGouLoginApi {
         });
     }
 
-    /**
-     * 检查二维码扫码状态
-     * 参照 KuGou server/module/login_qr_check.js
-     * 返回: 0=过期, 1=等待扫码, 2=待确认, 4=授权成功
-     */
     public static CompletableFuture<QrCheckResult> checkQrCode(String qrKey) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -320,7 +293,6 @@ public final class KuGouLoginApi {
                 params.put("srcappid", QR_SRCAPPID);
                 params.put("qrcode", qrKey);
 
-                // Web 签名
                 params.put("dfid", KuGouConfig.dfid != null ? KuGouConfig.dfid : "-");
                 params.put("mid", KuGouConfig.mid != null ? KuGouConfig.mid : "-");
                 params.put("uuid", "-");
@@ -352,7 +324,6 @@ public final class KuGouLoginApi {
                 JsonObject data = root.getAsJsonObject("data");
                 int qrStatus = data.has("status") ? data.get("status").getAsInt() : -1;
 
-                // 授权成功
                 if (qrStatus == 4) {
                     String token = data.has("token") ? data.get("token").getAsString() : "";
                     String userId = data.has("userid") ? data.get("userid").getAsString() : "";
@@ -379,14 +350,14 @@ public final class KuGouLoginApi {
                 String errCode = root.has("err_code") ? root.get("err_code").getAsString() : "";
                 String msg;
                 switch (errCode) {
-                    case "20010": msg = "账号或密码错误"; break;
-                    case "20011": msg = "账号不存在"; break;
-                    case "20012": msg = "密码错误次数过多，请稍后再试"; break;
-                    case "20013": msg = "账号已被冻结"; break;
+                    case "20010": msg = Component.translatable("netmusic_kugou.login.err_bad_cred").getString(); break;
+                    case "20011": msg = Component.translatable("netmusic_kugou.login.err_no_account").getString(); break;
+                    case "20012": msg = Component.translatable("netmusic_kugou.login.err_pwd_freq").getString(); break;
+                    case "20013": msg = Component.translatable("netmusic_kugou.login.err_frozen").getString(); break;
                     default:
                         msg = root.has("error_msg") ? root.get("error_msg").getAsString()
                                 : (root.has("msg") ? root.get("msg").getAsString()
-                                : (!errCode.isEmpty() ? ("错误码: " + errCode)
+                                : (!errCode.isEmpty() ? Component.translatable("netmusic_kugou.login.err_code", errCode).getString()
                                 : "Unknown error"));
                 }
                 return new LoginResult(false, msg);
@@ -397,7 +368,6 @@ public final class KuGouLoginApi {
                 return new LoginResult(false, "No data in response");
             }
 
-            // 解密 secu_params 获取 token
             if (data.has("secu_params")) {
                 try {
                     String secuParams = data.get("secu_params").getAsString();
@@ -419,7 +389,6 @@ public final class KuGouLoginApi {
                 }
             }
 
-            // 部分接口直接返回 token
             if (data.has("token")) {
                 String token = data.get("token").getAsString();
                 String userId = data.has("userid") ? String.valueOf(data.get("userid").getAsLong()) : "";
@@ -456,16 +425,12 @@ public final class KuGouLoginApi {
         KuGouConfig.markDirty();
     }
 
-    // ==================== 登出 ====================
-
     public static void logout() {
         KuGouConfig.token = "";
         KuGouConfig.userid = "";
         KuGouConfig.clearCookies();
         KuGouConfig.markDirty();
     }
-
-    // ==================== 数据类 ====================
 
     public static class LoginResult {
         public final boolean success;
@@ -503,12 +468,9 @@ public final class KuGouLoginApi {
         }
     }
 
-    /**
-     * 二维码 Key 获取结果
-     */
     public static class QrKeyResult {
-        public final String qrcode;   // 酷狗服务器返回的 QR Key
-        public final String qrUrl;    // 二维码完整 URL（供用户扫描）
+        public final String qrcode;
+        public final String qrUrl;
         public final String error;
 
         public QrKeyResult(String qrcode, String error) {
@@ -522,7 +484,6 @@ public final class KuGouLoginApi {
         }
     }
 
-    // JSON 序列化辅助类
     private static class PwdEncrypt {
         String pwd;
         String code = "";
