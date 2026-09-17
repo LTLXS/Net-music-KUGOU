@@ -59,7 +59,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
         String host = url.getHost();
         if (host == null) return false;
         String protocol = url.getProtocol();
-        // 只拦截 kugou.com（含所有子域：fs.youthandroid2.kugou.com / webfs.kugou.com / ...）
         return (host.equalsIgnoreCase("kugou.com") || host.endsWith(".kugou.com"))
                 && ("http".equalsIgnoreCase(protocol) || "https".equalsIgnoreCase(protocol));
     }
@@ -108,7 +107,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
                     "[KuGouAudio] Stream FAILED after {}ms: {} | url={}",
                     dt, e.getMessage(), urlPreview, e);
             // 额外尝试一次 "HEAD" 拿状态码 / Content-Type，把真实 HTTP 错误原因写进日志，
-            // 方便用户回看"这次到底是 403 / 302 错页 / 400 / 5xx"。
             probeFailureReason(urlStr);
             throw e;
         } catch (Throwable t) {
@@ -145,7 +143,6 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
 
     @Override
     public int getPriority() {
-        // 比 NetEaseHttpHandler(10) 和 DirectHttpHandler(0) 都高，优先处理 *.kugou.com
         return 100;
     }
 }

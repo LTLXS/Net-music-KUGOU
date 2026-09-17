@@ -34,7 +34,6 @@ public class TextureManagerMixin {
         if (location == null || texture == null) {
             return;
         }
-        // 字体图集路径形如 "font/ascii" / "font/accents_regular" / "font/nonlatin_european"
         if (location.getPath().contains("font")) {
             texture.setFilter(false, false);
         }

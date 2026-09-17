@@ -7,15 +7,6 @@ import net.minecraft.world.item.ItemStack;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 
-/**
- * 父 mod 的 ItemMusicCD 已完全 DataComponent 化，不再挂 NBT。
- * 本类对 {@link CdAddonData} 进行读写，封装在 ItemStack 的
- * {@link InitDataComponent#CD_ADDON_DATA} 组件上。
- *
- * <p>CD 上烧入的 songUrl 是酷狗短时签名 URL，过期后会 403。
- * 有了 fileHash + albumId，我们就能在过期时重新调一次
- * {@code KuGouApiClient.getSongUrl()} 拿新 URL。</p>
- */
 public final class CdNbtHelper {
     private CdNbtHelper() {}
 
@@ -36,10 +27,6 @@ public final class CdNbtHelper {
         return cd.getOrDefault(InitDataComponent.CD_ADDON_DATA, CdAddonData.EMPTY);
     }
 
-    /**
-     * 用 mutator 函数修改 CD 上的 {@link CdAddonData}，整体写回。
-     * <p>示例：{@code updateData(cd, d -> d.withFileHash(hash).withAlbumId(albumId))}</p>
-     */
     public static void updateData(ItemStack cd, UnaryOperator<CdAddonData> mutator) {
         if (!isMusicCd(cd) || mutator == null) {
             return;
@@ -51,9 +38,6 @@ public final class CdNbtHelper {
         }
     }
 
-    /**
-     * 把识别信息写到 CD 的 DataComponent。如果 fileHash 为空则不写。
-     */
     public static void writeOriginalInfo(ItemStack cd, String fileHash, String albumId) {
         if (!isMusicCd(cd) || fileHash == null || fileHash.isEmpty()) {
             return;
@@ -67,9 +51,6 @@ public final class CdNbtHelper {
         ));
     }
 
-    /**
-     * 读取 CD 上记录的原曲识别信息。空时返回 {@link Optional#empty()}。
-     */
     public static Optional<CdAddonData> readOriginalInfo(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return Optional.empty();
@@ -81,9 +62,6 @@ public final class CdNbtHelper {
         return Optional.of(data);
     }
 
-    /**
-     * 刷新 CD 上的 songUrl 字段。
-     */
     public static void updateSongUrl(ItemStack cd, String newUrl) {
         if (!isMusicCd(cd) || newUrl == null || newUrl.isEmpty()) {
             return;
@@ -96,9 +74,6 @@ public final class CdNbtHelper {
         ItemMusicCD.setSongInfo(info, cd);
     }
 
-    /**
-     * 从 CD 上读取当前 songUrl
-     */
     public static String readSongUrl(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;
@@ -123,7 +98,6 @@ public final class CdNbtHelper {
                 lrcText,
                 d.lrcTrans()
         ));
-        // songName 仍然存到 ItemMusicCD 自带的 SongInfo 字段
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info != null && songName != null && !songName.isEmpty()) {
             info.songName = songName;
@@ -131,9 +105,6 @@ public final class CdNbtHelper {
         }
     }
 
-    /**
-     * 读取 CD 上的 LRC 文本和歌曲名。没有 LRC 则返回 null。
-     */
     public static Lyric readLyric(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;
@@ -142,7 +113,6 @@ public final class CdNbtHelper {
         if (!data.hasLrc()) {
             return null;
         }
-        // songName 从父 mod 的 SongInfo 拿
         String song = null;
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info != null) {
@@ -151,9 +121,6 @@ public final class CdNbtHelper {
         return new Lyric(data.lrc(), song);
     }
 
-    /**
-     * CD 上记录的 LRC 文本 + 歌曲名
-     */
     public static final class Lyric {
         public final String lrcText;
         public final String songName;
@@ -164,9 +131,6 @@ public final class CdNbtHelper {
         }
     }
 
-    /**
-     * 写入翻译 JSON 文本（酷狗 KRC language 字段解码后的 JSON 字符串）到 CD DataComponent。
-     */
     public static void writeLyricTranslation(ItemStack cd, String transJson) {
         if (!isMusicCd(cd) || transJson == null || transJson.isEmpty()) {
             return;
@@ -180,9 +144,6 @@ public final class CdNbtHelper {
         ));
     }
 
-    /**
-     * 读取 CD 上的翻译 JSON 文本。没有则返回 null。
-     */
     public static String readLyricTranslation(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return null;

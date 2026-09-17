@@ -52,7 +52,6 @@ public record AddCdRefreshInfoMessage(
                 return;
             }
             AbstractContainerMenu menu = player.containerMenu;
-            // 取 slot 0 的 CD（刻录机的输入槽）。如果玩家没开刻录机，退而求其次用主手。
             ItemStack cd = ItemStack.EMPTY;
             if (menu != null && menu.slots.size() > 0) {
                 cd = menu.getSlot(0).getItem();
@@ -72,7 +71,6 @@ public record AddCdRefreshInfoMessage(
             }
             CdNbtHelper.writeOriginalInfo(cd, msg.fileHash, msg.albumId);
 
-            // 异步拉取歌词并写入 CD DataComponent（best-effort，不阻塞主流程）
             fetchAndStoreLyric(cd, msg);
         });
     }
@@ -93,7 +91,7 @@ public record AddCdRefreshInfoMessage(
         String song = info.songName == null ? "" : info.songName;
         String keyword = (singer.isEmpty() ? "" : singer + " - ") + song;
         if (keyword.isEmpty()) return;
-        int duration = info.songTime * 1000; // 秒→毫秒
+        int duration = info.songTime * 1000;
 
         KuGouApiClient.searchLyricCandidates(msg.fileHash, keyword, duration, song, singer)
                 .thenAccept(list -> {
@@ -102,7 +100,6 @@ public record AddCdRefreshInfoMessage(
                                 msg.fileHash, keyword);
                         return;
                     }
-                    // krc 优先：只有 KRC 的 [language:base64] 字段才携带翻译/罗马音，lrc 不携带。
                     // krc 全候选失败时回退 lrc（代价是丢翻译，但至少有歌词）。
                     KuGouApiClient.getLyricWithFallback(list, "krc")
                             .thenAccept(content -> {

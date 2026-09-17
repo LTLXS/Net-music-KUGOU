@@ -86,7 +86,6 @@ public final class KuGouPrefetch {
         callback = cb;
     }
 
-    /** 检查该 pos 是否在 replay 冷却期内。 */
     public static boolean isOnReplayCooldown(net.minecraft.core.BlockPos pos) {
         if (pos == null) return false;
         Long last = REPLAY_COOLDOWN.get(pos);
@@ -98,14 +97,11 @@ public final class KuGouPrefetch {
         return true;
     }
 
-    /** 标记该 pos 刚被 replay，进入冷却。 */
     private static void markReplayed(net.minecraft.core.BlockPos pos) {
         if (pos != null) {
             REPLAY_COOLDOWN.put(pos, System.currentTimeMillis());
         }
     }
-
-    // =================================================================== API
 
     /**
      * 异步预取：后台线程去 forceRefresh 一个 URL，结果缓存进 {@link #PENDING}。
@@ -120,14 +116,12 @@ public final class KuGouPrefetch {
         CdAddonData info = infoOpt.get();
         if (info.fileHash() == null || info.fileHash().isEmpty()) return;
 
-        // 清理过期条目（顺便自维护 map 大小）
         evictExpired();
 
         PrefetchKey key = new PrefetchKey(pos, playerId);
         long now = System.currentTimeMillis();
         Entry old = PENDING.get(key);
         if (old != null && now - old.createdAtMs < 500L) {
-            // 500ms 内重复右键 → 已经在跑了，不重复提交
             return;
         }
 
@@ -166,12 +160,11 @@ public final class KuGouPrefetch {
 
         PrefetchKey key = new PrefetchKey(pos, playerId);
         Entry e = PENDING.get(key);
-        // 玩家用 slot 移动 CD 的话，playerId 可能对不上 → 再尝试一把 "any player same pos" key（遍历找第一个 pos 相等的）
         if (e == null) {
             for (var kv : PENDING.entrySet()) {
                 if (kv.getKey().pos().equals(pos)) {
                     e = kv.getValue();
-                    key = kv.getKey(); // 之后用这个 key 移除
+                    key = kv.getKey();
                     break;
                 }
             }
@@ -208,7 +201,7 @@ public final class KuGouPrefetch {
                 try {
                     if (th != null) return;
                     if (finalUrl == null || finalUrl.isEmpty()) return;
-                    if (finalUrl.equals(oldFallback)) return; // URL 没变不用切
+                    if (finalUrl.equals(oldFallback)) return;
                     if (isOnReplayCooldown(posSafe)) {
                         com.github.tartaricacid.netmusic.kugou.KuGouLogger.info(
                                 "[KuGouPrefetch] Skip replay: on cooldown for pos={}", posSafe);
@@ -221,9 +214,7 @@ public final class KuGouPrefetch {
                             "[KuGouPrefetch] Late refresh OK: pos={}, oldLen={} -> newLen={}, will schedule re-setPlayToClient after 1 tick",
                             posSafe, oldFallback.length(), finalUrl.length());
                     cb.onUrlChanged(lvlSafe, posSafe, oldFallback, finalUrl);
-                    // 顺带把 CD NBT 也补上：之前 RightClick 用的是 snapshot，实际手上的 cd 没被写回；
                     // 但 cb.onUrlChanged 会从 TileEntity slot 0 拿真实 stack 写 NBT，所以这里不需要额外处理。
-                    // （eSafe.cdSnapshot 只是快照副本，写回去也影响不了真实 world）
                 } catch (Throwable t) {
                     com.github.tartaricacid.netmusic.kugou.KuGouLogger.warn(
                             "[KuGouPrefetch] late refresh cb failed: {}", t.getMessage());
@@ -278,7 +269,19 @@ public final class KuGouPrefetch {
         PENDING.entrySet().removeIf(kv -> now - kv.getValue().createdAtMs > TTL_MS);
     }
 
-    /** @see #tryTake */
+    /** 服务端停止时关闭预取线程池，避免 daemon 线程残留导致类/资源无法卸载。 */
+    public static void shutdown() {
+        EXEC.shutdown();
+        try {
+            if (!EXEC.awaitTermination(2, TimeUnit.SECONDS)) {
+                EXEC.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            EXEC.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public record PrefetchResult(String url, boolean completedSynchronously, String fileHash, String albumId, boolean entryFound) {
         private static final PrefetchResult NONE = new PrefetchResult("", false, "", "", false);
         public static PrefetchResult none() { return NONE; }

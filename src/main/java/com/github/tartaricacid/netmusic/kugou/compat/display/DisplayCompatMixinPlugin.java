@@ -27,9 +27,32 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
 
     private static final Logger LOGGER = LogManager.getLogger("NetMusicKuGou-DisplayCompat");
     private static final String DISPLAY_LYRIC_CACHE = "com.netmusicdisplay.source.LyricCache";
+    private static final String NML_LYRIC_SOURCE =
+            "com.gly091020.netMusicListNeoforge.create.musicPlayerSource.LyricSource";
 
     private static boolean displayModPresent = false;
     private static boolean probed = false;
+    private static Boolean nmlPresent = null;
+
+    /**
+     * 探测 netMusicList 自带的 Create 显示源 {@code LyricSource} 是否存在。
+     * 同样用 {@code Class.forName}（不强制初始化）而非 ModList，因为 onLoad 早于 mod 主类构造。
+     */
+    private static synchronized boolean probeNetMusicList() {
+        if (nmlPresent != null) return nmlPresent;
+        boolean ok;
+        try {
+            Class.forName(NML_LYRIC_SOURCE, false, DisplayCompatMixinPlugin.class.getClassLoader());
+            ok = true;
+        } catch (Throwable ignored) {
+            ok = false;
+        }
+        nmlPresent = ok;
+        LOGGER.info("[DisplayCompat] netMusicList LyricSource {}, {}",
+                ok ? "detected" : "not present",
+                ok ? "enabling its override mixin" : "skipping its override mixin");
+        return ok;
+    }
 
     private static synchronized boolean probeDisplayMod() {
         if (probed) return displayModPresent;
@@ -61,6 +84,11 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        // 接管 netMusicList 自带显示源的 mixin：只在 netMusicList 真的装了时才应用，
+        // 否则目标类不存在会直接崩游戏。
+        if (mixinClassName.contains("NetMusicList")) {
+            return probeNetMusicList();
+        }
         // 兼容层 mixin 文件名都以 "Display" 开头，方便统一识别
         if (!mixinClassName.endsWith("DisplayCompat") && !mixinClassName.contains(".Display")) {
             return true;

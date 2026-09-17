@@ -5,6 +5,7 @@ import com.github.tartaricacid.netmusic.item.ItemMusicCD;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.NetMusicKuGou;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
+import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.BlockRomajiRegistry;
 import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.lyric.LyricInjectCache;
@@ -22,6 +23,9 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -38,6 +42,32 @@ import java.util.concurrent.TimeUnit;
 @Mixin(value = MusicToClientMessage.class, remap = false)
 public class MusicToClientMessageMixin {
 
+    private static final Field POS_FIELD;
+    private static final Field SONG_NAME_FIELD;
+    private static final Method URL_METHOD;
+    private static final Method TIME_SECOND_METHOD;
+
+    static {
+        Field p = null, s = null;
+        Method u = null, t = null;
+        try {
+            p = MusicToClientMessage.class.getDeclaredField("pos");
+            p.setAccessible(true);
+            s = MusicToClientMessage.class.getDeclaredField("songName");
+            s.setAccessible(true);
+            u = MusicToClientMessage.class.getMethod("url");
+            u.setAccessible(true);
+            t = MusicToClientMessage.class.getMethod("timeSecond");
+            t.setAccessible(true);
+        } catch (NoSuchFieldException | NoSuchMethodException e) {
+            KuGouLogger.warn("KuGou lyric: failed to cache MusicToClientMessage reflection: {}", e.getMessage());
+        }
+        POS_FIELD = p;
+        SONG_NAME_FIELD = s;
+        URL_METHOD = u;
+        TIME_SECOND_METHOD = t;
+    }
+
     @Inject(method = "onHandle", at = @At("HEAD"), remap = false, cancellable = false)
     private static void netmusickugou$onHandleHead(MusicToClientMessage message, CallbackInfo ci) {
         LyricInjectCache.clearAll();
@@ -45,17 +75,31 @@ public class MusicToClientMessageMixin {
             Level level = Minecraft.getInstance().level;
             if (level == null) return;
 
-            java.lang.reflect.Field posField = MusicToClientMessage.class.getDeclaredField("pos");
-            posField.setAccessible(true);
-            BlockPos pos = (BlockPos) posField.get(message);
-
-            java.lang.reflect.Field songNameField = MusicToClientMessage.class.getDeclaredField("songName");
-            songNameField.setAccessible(true);
-            String songName = (String) songNameField.get(message);
+            BlockPos pos = (BlockPos) POS_FIELD.get(message);
+            String songName = (String) SONG_NAME_FIELD.get(message);
 
             BlockEntity be = level.getBlockEntity(pos);
             if (!(be instanceof TileEntityMusicPlayer)) return;
             TileEntityMusicPlayer musicPlay = (TileEntityMusicPlayer) be;
+
+            // === 客户端也注册当前正在播放的歌曲，确保显示牌/渲染侧上下文一致 ===
+            try {
+                String url = (String) URL_METHOD.invoke(message);
+                int timeSecond = ((Number) TIME_SECOND_METHOD.invoke(message)).intValue();
+                String activeHash = KuGouDisplayCompat.extractHashFromNetmusiclibUrl(url);
+                if (activeHash == null || activeHash.isEmpty()) {
+                    ItemStack cd0 = musicPlay.getPlayerInv().getStackInSlot(0);
+                    Optional<CdAddonData> addonOpt = CdNbtHelper.readOriginalInfo(cd0);
+                    if (addonOpt.isPresent()) activeHash = addonOpt.get().fileHash();
+                }
+                if (activeHash != null && !activeHash.isEmpty()) {
+                    KuGouDisplayCompat.registerActiveSong(pos, activeHash, songName, timeSecond);
+                    // 歌曲开始播放：记录精确总时长（服务器刚写入 currentTime 的值），
+                    // 歌词进度以 currentTime 为基准、从此处开启新会话（切歌/重放自动归零）
+                    KuGouDisplayCompat.markPlayStart(pos, timeSecond);
+                }
+            } catch (Throwable ignored) {
+            }
 
             ItemStack cd = musicPlay.getPlayerInv().getStackInSlot(0);
             if (!CdNbtHelper.isMusicCd(cd)) return;
@@ -101,10 +145,6 @@ public class MusicToClientMessageMixin {
         }
     }
 
-    /**
-     * CD 上没有 LRC 时（刻录时异步歌词拉取尚未完成），在客户端即时补拉。
-     * 拉取完成后写入 LyricInjectCache，NetMusicSoundMixin.tick() 会补设 lyricRecord。
-     */
     private static void fetchLyricOnTheFly(ItemStack cd, BlockPos pos, String songName) {
         CdAddonData addon = CdNbtHelper.getData(cd);
         if (!addon.hasFileHash()) {

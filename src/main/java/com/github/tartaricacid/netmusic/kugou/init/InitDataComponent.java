@@ -21,10 +21,6 @@ public class InitDataComponent {
             DeferredRegister.createDataComponents(
                     Registries.DATA_COMPONENT_TYPE, NetMusicKuGou.MOD_ID);
 
-    /**
-     * CD 附加数据组件
-     * <p>键名：{@code netmusic_kugou:cd_addon_data}</p>
-     */
     public static final DeferredHolder<DataComponentType<?>, DataComponentType<CdAddonData>> CD_ADDON_DATA =
             DATA_COMPONENT_TYPES.registerComponentType(
                     "cd_addon_data",

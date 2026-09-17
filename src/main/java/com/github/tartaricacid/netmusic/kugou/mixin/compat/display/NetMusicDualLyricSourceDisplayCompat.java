@@ -16,10 +16,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 在 NetMusicDualLyricSource.provideText 入口拦截酷狗歌曲。
- * 返回双语歌词：原文 + 翻译（如有）。
- */
 @Mixin(value = NetMusicDualLyricSource.class, remap = false)
 public class NetMusicDualLyricSourceDisplayCompat {
 
@@ -34,7 +30,7 @@ public class NetMusicDualLyricSourceDisplayCompat {
             List<MutableComponent> lines = new ArrayList<>();
 
             if (ctx.record == null) {
-                lines.add(Component.literal("歌词加载中..."));
+                lines.add(Component.translatable("netmusic_kugou.display.lyric_loading"));
                 cir.setReturnValue(lines);
                 return;
             }

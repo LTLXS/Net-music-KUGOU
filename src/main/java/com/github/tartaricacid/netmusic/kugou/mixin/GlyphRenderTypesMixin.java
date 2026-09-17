@@ -28,10 +28,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(value = GlyphRenderTypes.class, remap = false)
 public class GlyphRenderTypesMixin {
 
-    /**
-     * 单色强度图集（intensity / bitmap font）。
-     * 对应 {@code RenderType.textIntensity*}(location) 系列。
-     */
     @Inject(method = "createForIntensityTexture(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/client/gui/font/GlyphRenderTypes;", at = @At("RETURN"))
     private static void netmusicKuGou$onIntensityTextureCreated(ResourceLocation location, CallbackInfoReturnable<GlyphRenderTypes> cir) {
         forceNearest(location, "intensity");
@@ -48,7 +44,6 @@ public class GlyphRenderTypesMixin {
      */
     @Inject(method = "createForColorTexture(Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/client/gui/font/GlyphRenderTypes;", at = @At("RETURN"))
     private static void netmusicKuGou$onColorTextureCreated(ResourceLocation location, CallbackInfoReturnable<GlyphRenderTypes> cir) {
-        // no-op: SDF shader ignores filter setting
     }
 
     /**

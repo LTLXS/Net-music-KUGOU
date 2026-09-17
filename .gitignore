@@ -48,3 +48,9 @@ moddev-extract/
 moddev-extract2/
 reference/
 nayuki_extract/
+
+# Local libs (large, not committed)
+buildscript_lib/
+
+# Tests (local only, not committed to repo)
+src/test/

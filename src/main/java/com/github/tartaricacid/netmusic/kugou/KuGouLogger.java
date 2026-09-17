@@ -32,19 +32,14 @@ public final class KuGouLogger {
     private static final DateTimeFormatter LINE_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /** SLF4J Logger，同时输出到游戏主日志 */
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-    /** 日志目录：config/NETMUSICCANNEEDKUGOU/ */
     public static final Path LOG_DIR = FMLPaths.CONFIGDIR.get().resolve(LOG_DIR_NAME);
 
-    /** 当前日志文件路径 */
     private static Path currentLogFile;
 
-    /** 日志缓冲区（异步写入） */
     private static final ConcurrentLinkedQueue<String> logQueue = new ConcurrentLinkedQueue<>();
 
-    /** 异步写入调度器 */
     private static final ScheduledExecutorService writer = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "KuGouLogger-Writer");
         t.setDaemon(true);
@@ -53,15 +48,6 @@ public final class KuGouLogger {
 
     private KuGouLogger() {}
 
-    /**
-     * 初始化日志系统。在模组构造时调用一次。
-     * <ul>
-     *   <li>创建日志目录</li>
-     *   <li>清理超出上限的旧日志</li>
-     *   <li>创建当前会话的日志文件</li>
-     *   <li>启动异步写入调度器</li>
-     * </ul>
-     */
     public static void init() {
         try {
             Files.createDirectories(LOG_DIR);
@@ -69,7 +55,6 @@ public final class KuGouLogger {
             String timestamp = LocalDateTime.now().format(FILE_DATE_FORMAT);
             currentLogFile = LOG_DIR.resolve("kugou_" + timestamp + ".log");
             Files.writeString(currentLogFile, "", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            // 每 2 秒刷新一次缓冲区到文件
             writer.scheduleAtFixedRate(KuGouLogger::flush, 2, 2, TimeUnit.SECONDS);
             LOGGER.info("[KuGouLogger] Log system initialized. Log dir: {}", LOG_DIR);
         } catch (IOException e) {
@@ -77,10 +62,6 @@ public final class KuGouLogger {
         }
     }
 
-    /**
-     * 关闭日志系统。在模组停止时调用。
-     * 刷新剩余日志并关闭调度器。
-     */
     public static void shutdown() {
         flush();
         writer.shutdown();
@@ -95,8 +76,6 @@ public final class KuGouLogger {
         // 最后再刷一次确保所有日志都写入
         flush();
     }
-
-    // ===== 日志方法 =====
 
     public static void info(String msg) {
         LOGGER.info(msg);
@@ -152,9 +131,6 @@ public final class KuGouLogger {
         logQueue.add(String.format("[%s] [%s] [%s] %s%n", timestamp, level, threadName, msg));
     }
 
-    /**
-     * 将缓冲区中的日志刷新到文件。
-     */
     private static void flush() {
         if (currentLogFile == null || logQueue.isEmpty()) return;
         try {
@@ -184,7 +160,6 @@ public final class KuGouLogger {
             }
             if (logFiles.size() <= MAX_LOG_FILES) return;
 
-            // 按修改时间排序，最旧的在前
             logFiles.sort(Comparator.comparingLong(p -> {
                 try {
                     return Files.getLastModifiedTime(p).toMillis();
@@ -203,19 +178,29 @@ public final class KuGouLogger {
         }
     }
 
-    /**
-     * 简单的格式化方法，支持 {} 占位符。
-     */
     private static String formatMessage(String format, Object... args) {
         if (args == null || args.length == 0) return format;
         String result = format;
-        for (Object arg : args) {
+        int argIdx = 0;
+        while (argIdx < args.length) {
             int idx = result.indexOf("{}");
             if (idx < 0) break;
+            Object arg = args[argIdx++];
             String replacement = (arg instanceof Throwable)
                     ? arg.getClass().getSimpleName() + ": " + ((Throwable) arg).getMessage()
                     : String.valueOf(arg);
             result = result.substring(0, idx) + replacement + result.substring(idx + 2);
+        }
+        // 占位符不足：把剩余参数以 [arg] 形式追加，避免信息被静默丢弃
+        if (argIdx < args.length) {
+            StringBuilder sb = new StringBuilder(result);
+            while (argIdx < args.length) {
+                Object arg = args[argIdx++];
+                sb.append(" [").append(arg instanceof Throwable
+                        ? arg.getClass().getSimpleName() + ": " + ((Throwable) arg).getMessage()
+                        : arg).append(']');
+            }
+            result = sb.toString();
         }
         return result;
     }

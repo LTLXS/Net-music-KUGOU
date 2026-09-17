@@ -19,7 +19,8 @@
     "compat.display.NetMusicLyricSourceDisplayCompat",
     "compat.display.NetMusicTransLyricSourceDisplayCompat",
     "compat.display.NetMusicAllInOneSourceDisplayCompat",
-    "compat.display.NetMusicDualLyricSourceDisplayCompat"
+    "compat.display.NetMusicDualLyricSourceDisplayCompat",
+    "compat.display.NetMusicListLyricSourceMixin"
   ],
   "injectors": {
     "defaultRequire": 1

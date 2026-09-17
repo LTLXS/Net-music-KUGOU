@@ -36,7 +36,6 @@ public final class BurnDataCache {
         return albumId;
     }
 
-    /** 一次性消费（取完即清） */
     public static String[] take() {
         String h = fileHash;
         String a = albumId;

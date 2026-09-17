@@ -29,10 +29,7 @@ import java.util.regex.Pattern;
  */
 public final class LrcConverter {
 
-
-    /** 标准 LRC 时间标签：[mm:ss.fff] */
     private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d+):(\\d+)[.:](\\d+)](.*)");
-    /** KRC 时间标签：[time,duration]（time 是毫秒） */
     private static final Pattern KRC_PATTERN = Pattern.compile("\\[(\\d+),(\\d+)\\](.*)");
     /**
      * LRC/KRC 元信息行识别（借鉴 KuGou 的 {@code getStaticLyricLines}）。
@@ -106,20 +103,15 @@ public final class LrcConverter {
             map.put(0, songName);
         }
         KrcLyrics krc = parseKrcLyrics(transJson, map);
-        // 把主歌词里**没有**翻译的 tick 也补上空字符串 "",
-        // 这样父模组 firstIntKey() 会返回**当前** tick，
-        // render 时 transLyric="" 就是空行 —— mixin 把它当作"无翻译"处理（单行显示原文）
         if (krc.translation != null && !krc.translation.isEmpty()) {
-            int[] mainTicks = map.keySet().toIntArray();
+            int[] mainTicks = ticksOf(map);
             for (int tick : mainTicks) {
                 krc.translation.putIfAbsent(tick, "");
             }
         }
-        // 罗马音 map 也做同样 padding：renderer 用 findFloorKey(romajiMap, currentKey) 找当前行，
-        // 如果当前 tick 在 romajiMap 里没有 entry，floor key 会落到**上一句**的 tick 上，
         // 显示出"上句罗马音"。补空字符串后，floor key 就会指向当前 tick，值为 "" → 隐藏。
         if (krc.romaji != null && !krc.romaji.isEmpty()) {
-            int[] mainTicks = map.keySet().toIntArray();
+            int[] mainTicks = ticksOf(map);
             for (int tick : mainTicks) {
                 krc.romaji.putIfAbsent(tick, "");
             }
@@ -162,15 +154,6 @@ public final class LrcConverter {
                 || text.contains(" - ");
     }
 
-    /**
-     * 解析 LRC 文本到 {@code tick → text}。
-     * <p>
-     * 支持两种格式：
-     * <ul>
-     *   <li>标准 LRC：{@code [mm:ss.fff]text}</li>
-     *   <li>KRC 歌词行：{@code [time,duration]text}（time 是毫秒整数）</li>
-     * </ul>
-     */
     public static Int2ObjectSortedMap<String> parseLrc(String lrcText) {
         Int2ObjectSortedMap<String> result = new Int2ObjectRBTreeMap<>();
         if (StringUtils.isBlank(lrcText)) {
@@ -178,7 +161,6 @@ public final class LrcConverter {
         }
         for (String line : lrcText.split("\n")) {
             String trimmed = line.trim();
-            // 先试 KRC 格式 [time,duration]text
             Matcher krcMatch = KRC_PATTERN.matcher(trimmed);
             if (krcMatch.find()) {
                 int timeMs = Integer.parseInt(krcMatch.group(1));
@@ -187,7 +169,6 @@ public final class LrcConverter {
                 result.put(totalTick, text);
                 continue;
             }
-            // 再试标准 LRC 格式 [mm:ss.fff]text
             Matcher lrcMatch = LRC_PATTERN.matcher(trimmed);
             if (lrcMatch.find()) {
                 int minutes = Integer.parseInt(lrcMatch.group(1));
@@ -247,18 +228,15 @@ public final class LrcConverter {
                 return new KrcLyrics(translation, romaji);
             }
 
-            // 单遍扫描：按 elem 的 type 路由到不同 map
             for (var elem : content) {
                 if (!elem.isJsonObject()) continue;
                 var obj = elem.getAsJsonObject();
                 if (!obj.has("lyricContent")) continue;
 
                 int type = obj.has("type") ? obj.get("type").getAsInt() : -1;
-                // 路由：type=0 → romaji；type=1 / type<0 → translation
                 Int2ObjectSortedMap<String> target = (type == 0) ? romaji : translation;
                 // 区分 KRC type：type=0 是罗马音/拼音（同行不同 script，应该嗅探验证），
                 // type=1 是翻译（跨语言/跨 script，不该用 content overlap 验证）。
-                // 标记 isRomaji 给 alignEntries / refineByContentSniffing 用。
                 boolean isRomaji = (type == 0);
 
                 var arr = obj.getAsJsonArray("lyricContent");
@@ -274,15 +252,6 @@ public final class LrcConverter {
         return new KrcLyrics(translation, romaji);
     }
 
-    /**
-     * 把 lyricContent 数组的每一项转为 KrcTimedEntry。
-     * 支持三种 item 格式：
-     * <ul>
-     *   <li>JsonObject { content, timePoint, endTimePoint }：标准格式</li>
-     *   <li>JsonArray：[string, string, ...]：旧 KRC（罗马音逐字）</li>
-     *   <li>JsonPrimitive：单字符串</li>
-     * </ul>
-     */
     private static List<KrcTimedEntry> collectEntries(JsonArray arr) {
         List<KrcTimedEntry> entries = new ArrayList<>();
         for (var item : arr) {
@@ -361,7 +330,7 @@ public final class LrcConverter {
         }
         if (validTimePoints > 0) {
             int written = 0;
-            int[] mainTicks = mainLyrics.keySet().toIntArray();
+            int[] mainTicks = ticksOf(mainLyrics);
             for (var en : entries) {
                 if (en.timePoint < 0) continue;
                 // 跳过空条目和 header 条目
@@ -376,30 +345,21 @@ public final class LrcConverter {
             }
             // timePoint 路径也要做内容嗅探重对齐 + 验证：
             // 很多 KRC 的 timePoint 跟 LRC tick 坐标系不一致（或 type=0/type=1 内容互相错位），
-            // 光靠 timePoint 拼出来的不一定对得上 LRC 主歌词。
             // 对 type=0 罗马音和 type=1 翻译都做嗅探（type=1 翻译也经常错位）。
             refineByContentSniffing(entries, mainLyrics, target, isRomaji);
         } else {
             alignByLine(entries, mainLyrics, target);
             // ===== Strategy 4: 内容嗅探（content-sniffing）=====
             // KRC 的内容跟 LRC 主歌词的索引经常不对齐（比如 KRC 缺前 4 行，
-            // 从 LRC 第 5 行才开始有 type=0 罗马音；type=1 中文翻译从第 4 行开始）。
             // Strategy 1/2/3 只能做"等量对齐"，无法识别这种偏移。
-            // 这里用 KRC 内容跟 LRC 主歌词的字符重叠（kanji 或 kana），
             // 找出"哪条 KRC entry 跟哪条 LRC 主歌词最匹配"，取中位数偏移，重做对齐。
             // 对 type=0/1 都做内容嗅探
             refineByContentSniffing(entries, mainLyrics, target, isRomaji);
         }
     }
 
-    /**
-     * 把任意 tick 吸附到主歌词里**最近且不大于**它的 tick；
-     * 如果超出主歌词范围则用主歌词最后一个 tick。
-     * 这样可以消除 timePoint 与主歌词 tick 的微小偏移带来的 desync。
-     */
     private static int snapToMainTick(int tick, int[] mainTicks) {
         if (mainTicks == null || mainTicks.length == 0) return tick;
-        // 二分找最接近且 <= tick 的主歌词 tick
         int lo = 0, hi = mainTicks.length - 1, best = mainTicks[0];
         if (tick < mainTicks[0]) return mainTicks[0];
         if (tick >= mainTicks[hi]) return mainTicks[hi];
@@ -450,7 +410,6 @@ public final class LrcConverter {
             return;
         }
 
-        // ===== 构建非元数据 tick 列表 =====
         List<Integer> nonMetaTicks = new ArrayList<>();
         boolean[] isMeta = new boolean[mainTicks.length];
         for (int i = 0; i < mainTicks.length; i++) {
@@ -458,7 +417,6 @@ public final class LrcConverter {
             isMeta[i] = isMetadataLine(text);
             if (!isMeta[i]) nonMetaTicks.add(mainTicks[i]);
         }
-        // 前瞻检测：第一个非元数据行如果后面紧跟元数据行，则它是歌曲标题
         if (!nonMetaTicks.isEmpty()) {
             int firstNonMetaIdx = -1;
             for (int i = 0; i < mainTicks.length; i++) {
@@ -496,7 +454,6 @@ public final class LrcConverter {
         }
         remaining = entries.size() - offset;
 
-        // 数量差调整
         int entryIdx = offset;
         int tickStart = 0;
         if (remaining > nonMetaCount) {
@@ -505,7 +462,6 @@ public final class LrcConverter {
             tickStart = nonMetaCount - remaining;
         }
 
-        // 逐行映射
         for (int i = tickStart; i < nonMetaCount && entryIdx < entries.size(); i++) {
             String text = entries.get(entryIdx).text;
             if (text != null && !text.trim().isEmpty() && !isHeaderEntry(text)) {
@@ -546,7 +502,6 @@ public final class LrcConverter {
         int[] mainTicks = mainLyrics.keySet().toIntArray();
         if (mainTicks.length == 0 || entries.isEmpty() || target.isEmpty()) return;
 
-        // ===== 构建非元数据 LRC tick 列表 =====
         List<Integer> nonMetaTicks = new ArrayList<>();
         List<String> nonMetaLines = new ArrayList<>();
         for (int i = 0; i < mainTicks.length; i++) {
@@ -558,7 +513,6 @@ public final class LrcConverter {
         }
         if (nonMetaTicks.isEmpty()) return;
 
-        // ===== 收集非空、非 header 的 KRC 条目 =====
         int headerSkip = 0;
         while (headerSkip < entries.size() && isHeaderEntry(entries.get(headerSkip).text)) {
             headerSkip++;
@@ -572,8 +526,6 @@ public final class LrcConverter {
         }
         if (krcLines.isEmpty()) return;
 
-        // ===== 步骤 0：主歌词 CJK 占比检查 =====
-        // 如果主歌词几乎全是拉丁字母（意大利语/英语/韩语字母转写等），
         // content-sniffing 的 kanji/kana 重叠打分永远是 0，会误判正确的翻译为"错位"清空。
         // 这种情况必须信任行数对齐（Strategy 1/2/3 已经处理），跳过嗅探。
         if (!isMainLyricsCjk(nonMetaLines)) {
@@ -583,7 +535,6 @@ public final class LrcConverter {
         // ===== 步骤 1：单调贪心重对齐（针对 KRC type=1 翻译与 LRC 主歌词错位）=====
         // median offset 假设错位是均匀的，但 KRC type=1 翻译常常跟 LRC 主歌词
         // 不是固定偏移（副歌、重复段会拉偏 median）。用单调贪心：按 KRC entry 顺序
-        // 在剩余 LRC 行里找最佳匹配（kanji/kana overlap 最高），保持 LRC idx 单调不减。
         try {
             if (krcLines.size() < 3) {
                 // 条目太少，跳过重对齐
@@ -618,10 +569,8 @@ public final class LrcConverter {
                 }
 
                 if (matched < 3) {
-                    // 新路径匹配数太少（< 3 个），monotone greedy 匹配度低
                     // ⇒ 重对齐结果不可信，保留 Strategy 1/2/3 已经在 target 里的旧值，不动。
                 } else {
-                    // 1b) 比较新旧得分
                     int oldScore = computeTotalOverlap(target, mainLyrics);
                     int newScore = computeTotalOverlap(newTarget, mainLyrics);
 
@@ -635,12 +584,6 @@ public final class LrcConverter {
             KuGouLogger.warn("[NetMusicKuGou] content-sniffing re-align failed: {}", ex.getMessage());
         }
 
-        // ===== 步骤 2：质量评分 =====
-        // 0 分: 行数差异 > 50% 或 target 无对应主歌词行
-        // 1 分: 底分
-        // +1: 行数差异 ≤ 33%
-        // +1: target 填充 ≥ mainTicks/2
-        // +1: kanji/kana 重叠分 > 0
         // 分数 ≤ 1 时清空 target。
         int targetScore = 0;
         int targetChecked = 0;
@@ -678,10 +621,6 @@ public final class LrcConverter {
         return score;
     }
 
-    /**
-     * 计算给定的 KRC 行列表跟 LRC 行列表在指定偏移下的总重叠分。
-     * 偏移 = 非元数据 LRC 索引 - KRC 索引。
-     */
     private static int computeOverlapScore(List<String> krcLines, List<String> lrcLines, int offset) {
         int score = 0;
         for (int i = 0; i < krcLines.size(); i++) {
@@ -721,28 +660,20 @@ public final class LrcConverter {
         if (targetChecked == 0) {
             return 0;
         }
-        int score = 1; // 底分
+        int score = 1;
         // +1: 行数匹配（≤ 33% 差异，兼容 KRC 少于 LRC 的部分翻译）
         int diff = Math.abs(krcCount - nonMetaCount);
         int matchDiff = Math.max(2, nonMetaCount / 3);
         if (diff <= matchDiff) score++;
-        // +1: target 填充充分
         if (targetSize >= mainTicksLength / 2) score++;
         // +1: 内容嗅探重叠分 > 0
         if (targetScore > 0) score++;
         return Math.min(5, Math.max(1, score));
     }
 
-    /**
-     * 计算两个字符串之间的"内容重叠分"。对日文 kanji、中文 hanzi 直接比较；
-     * 罗马音先转 kana 再比较。
-     * <p>
-     * 重叠 = 两边 kanji/kana 字符集合的交集大小。
-     */
     private static int contentOverlap(String s1, String s2) {
         if (s1 == null || s2 == null) return 0;
 
-        // 检测 s1 是否是罗马音（含拉丁字母）→ 转 kana
         boolean isRomaji = false;
         for (int i = 0; i < s1.length(); i++) {
             char c = s1.charAt(i);
@@ -755,13 +686,15 @@ public final class LrcConverter {
 
         Set<Integer> set1 = new HashSet<>();
         Set<Integer> set2 = new HashSet<>();
-        for (int i = 0; i < processed1.length(); i++) {
+        for (int i = 0; i < processed1.length(); ) {
             int cp = processed1.codePointAt(i);
             if (isKana(cp) || isKanji(cp)) set1.add(cp);
+            i += Character.charCount(cp);
         }
-        for (int i = 0; i < s2.length(); i++) {
+        for (int i = 0; i < s2.length(); ) {
             int cp = s2.codePointAt(i);
             if (isKana(cp) || isKanji(cp)) set2.add(cp);
+            i += Character.charCount(cp);
         }
         set1.retainAll(set2);
         return set1.size();
@@ -776,7 +709,6 @@ public final class LrcConverter {
         String lower = romaji.toLowerCase();
         StringBuilder sb = new StringBuilder();
         int i = 0;
-        // 按长度倒序尝试：3 字符 → 2 字符 → 1 字符
         while (i < lower.length()) {
             boolean matched = false;
             if (i + 3 <= lower.length()) {
@@ -812,14 +744,11 @@ public final class LrcConverter {
         return sb.toString();
     }
 
-    /** 简易 romaji → kana 映射表（基础 + 拗音）。 */
     private static final java.util.Map<String, String> ROMAJI_KANA_MAP = buildRomajiKanaMap();
 
     private static java.util.Map<String, String> buildRomajiKanaMap() {
         java.util.Map<String, String> m = new java.util.HashMap<>();
-        // 元音
         m.put("a", "あ"); m.put("i", "い"); m.put("u", "う"); m.put("e", "え"); m.put("o", "お");
-        // 清音
         m.put("ka", "か"); m.put("ki", "き"); m.put("ku", "く"); m.put("ke", "け"); m.put("ko", "こ");
         m.put("sa", "さ"); m.put("shi", "し"); m.put("su", "す"); m.put("se", "せ"); m.put("so", "そ");
         m.put("ta", "た"); m.put("chi", "ち"); m.put("tsu", "つ"); m.put("te", "て"); m.put("to", "と");
@@ -829,14 +758,11 @@ public final class LrcConverter {
         m.put("ya", "や"); m.put("yu", "ゆ"); m.put("yo", "よ");
         m.put("ra", "ら"); m.put("ri", "り"); m.put("ru", "る"); m.put("re", "れ"); m.put("ro", "ろ");
         m.put("wa", "わ"); m.put("wo", "を"); m.put("n", "ん");
-        // 浊音
         m.put("ga", "が"); m.put("gi", "ぎ"); m.put("gu", "ぐ"); m.put("ge", "げ"); m.put("go", "ご");
         m.put("za", "ざ"); m.put("ji", "じ"); m.put("zu", "ず"); m.put("ze", "ぜ"); m.put("zo", "ぞ");
         m.put("da", "だ"); m.put("di", "ぢ"); m.put("du", "づ"); m.put("de", "で"); m.put("do", "ど");
         m.put("ba", "ば"); m.put("bi", "び"); m.put("bu", "ぶ"); m.put("be", "べ"); m.put("bo", "ぼ");
-        // 半浊音
         m.put("pa", "ぱ"); m.put("pi", "ぴ"); m.put("pu", "ぷ"); m.put("pe", "ぺ"); m.put("po", "ぽ");
-        // 拗音（3 字符）
         m.put("sha", "しゃ"); m.put("shu", "しゅ"); m.put("sho", "しょ");
         m.put("cha", "ちゃ"); m.put("chu", "ちゅ"); m.put("cho", "ちょ");
         m.put("ja", "じゃ"); m.put("ju", "じゅ"); m.put("jo", "じょ");
@@ -858,8 +784,8 @@ public final class LrcConverter {
     }
 
     private static boolean isKana(int cp) {
-        return (cp >= 0x3040 && cp <= 0x309F)   // 平假名
-                || (cp >= 0x30A0 && cp <= 0x30FF); // 片假名
+        return (cp >= 0x3040 && cp <= 0x309F)
+                || (cp >= 0x30A0 && cp <= 0x30FF);
     }
 
     /**
@@ -873,20 +799,18 @@ public final class LrcConverter {
         int total = 0;
         for (String s : lines) {
             if (s == null) continue;
-            for (int i = 0; i < s.length(); i++) {
+            for (int i = 0; i < s.length(); ) {
                 int cp = s.codePointAt(i);
-                if (cp <= 0x20) continue; // 跳过空白/控制字符
+                if (cp <= 0x20) { i += Character.charCount(cp); continue; } // 跳过空白/控制字符
                 total++;
                 if (isKanji(cp) || isKana(cp)) cjk++;
+                i += Character.charCount(cp);
             }
         }
         if (total == 0) return false;
-        return (cjk * 10) >= (total * 3); // 30% 阈值
+        return (cjk * 10) >= (total * 3);
     }
 
-    /**
-     * 判断 entry 是否为 header（版权声明、AI 标注等非翻译内容）。
-     */
     private static boolean isHeaderEntry(String text) {
         if (text == null || text.isEmpty()) return false;
         return text.contains("翻译") || text.contains("以下歌词")
@@ -912,14 +836,8 @@ public final class LrcConverter {
         }
     }
 
-    /**
-     * KRC language 字段的解析结果：中文翻译（type=1）+ 罗马音/原语言（type=0）。
-     * 任一字段为 null 表示该类内容不存在。
-     */
     public static final class KrcLyrics {
-        /** type=1 中文翻译；可能为空 map。renderer 按配置决定是否显示。 */
         public final Int2ObjectSortedMap<String> translation;
-        /** type=0 罗马音/拼音/原语言；可能为空 map。renderer 按配置决定是否显示。 */
         public final Int2ObjectSortedMap<String> romaji;
 
         public KrcLyrics(Int2ObjectSortedMap<String> translation, Int2ObjectSortedMap<String> romaji) {
@@ -928,10 +846,6 @@ public final class LrcConverter {
         }
     }
 
-    /**
-     * {@link #toLyricData} 的返回类型：主歌词记录（LyricRecord，含 lyrics+translation）
-     * + 罗马音 map（renderer 按配置决定是否渲染）。
-     */
     public static final class KuGouLyricData {
         public final LyricRecord record;
         public final Int2ObjectSortedMap<String> romaji;
@@ -940,5 +854,10 @@ public final class LrcConverter {
             this.record = record;
             this.romaji = romaji == null ? new Int2ObjectRBTreeMap<>() : romaji;
         }
+    }
+
+    /** 取排序歌词 map 的 tick 键数组（多处共用，避免重复写 keySet().toIntArray()）。 */
+    private static int[] ticksOf(Int2ObjectSortedMap<String> map) {
+        return map.keySet().toIntArray();
     }
 }

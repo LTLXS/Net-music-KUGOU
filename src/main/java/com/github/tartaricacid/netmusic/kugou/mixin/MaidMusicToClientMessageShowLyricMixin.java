@@ -38,10 +38,8 @@ public class MaidMusicToClientMessageShowLyricMixin {
     private static void kugou$onShowLyricPre(EntityMaid maid, String url, String songName, int timeSecond,
                                                  CallbackInfo ci) {
         try {
-            // === 步骤 1：预填 LRC 缓存（无论 URL 类型）===
             // 关键：找和 url（当前正在播放的 CD 原始 songUrl）匹配的 CD 来读 LRC。
             // 不能遍历所有 CD —— 其它 CD 的 LRC 会污染当前歌曲。
-            // 用 LrcConverter.toLyricData 一次拿到 翻译 + 罗马音 两组。
             CombinedInvWrapper inv = maid.getAvailableInv(false);
             if (inv != null && url != null) {
                 for (int i = 0; i < inv.getSlots(); i++) {
@@ -51,7 +49,6 @@ public class MaidMusicToClientMessageShowLyricMixin {
                         if (lyric != null && lyric.lrcText != null && !lyric.lrcText.isEmpty()) {
                             String transJson = CdNbtHelper.readLyricTranslation(stack);
                             // 解析 LRC + 翻译 + 罗马音（timePoint 对齐）。歌词失败时不会崩（返回 null），
-                            // 这种情况下我们只缓存 raw transJson 和空 romaji，renderer 会兜底。
                             LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
                                     lyric.lrcText, transJson,
                                     lyric.songName != null ? lyric.songName : songName);
@@ -69,11 +66,10 @@ public class MaidMusicToClientMessageShowLyricMixin {
             }
 
             // === 步骤 2：非网易云 URL 时，自己 addChatBubble（服务端 add 才能正确同步） ===
-            // startTick 在 server 端用当前 gameTime 即可，client 端 LyricChatBubbleRendererMixin 会根据
             // 实际 init 时刻（audio 已经开始播放）自动重算 startTick 实现对齐。
             if (url == null || !url.startsWith(MUSIC_163_URL)) {
                 long gameTime = maid.level().getGameTime();
-                long startTick = gameTime; // client 端会自动重算
+                long startTick = gameTime;
                 int existTick = timeSecond * 20 + 20 + 60;
                 LyricChatBubbleData bubbleData = new LyricChatBubbleData(0L, songName, existTick, startTick);
                 maid.getChatBubbleManager().addChatBubble(bubbleData);

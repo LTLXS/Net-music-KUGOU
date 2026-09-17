@@ -6,25 +6,20 @@ public class ClientConfig {
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
     public static final ModConfigSpec SPEC;
 
-    // 音乐源
     public static final ModConfigSpec.ConfigValue<String> PROVIDER;
     public static final ModConfigSpec.ConfigValue<String> VIP_COOKIE;
 
-    // 音质
     public static final ModConfigSpec.ConfigValue<String> AUDIO_QUALITY;
 
-    // 自动领取每日 VIP
     public static final ModConfigSpec.BooleanValue AUTO_RECEIVE_VIP;
 
     // VIP 失败后的重试间隔（分钟）
     public static final ModConfigSpec.IntValue VIP_RETRY_INTERVAL_MINUTES;
 
-    // 烧入的 URL 失效后自动续期
     public static final ModConfigSpec.BooleanValue URL_REFRESH_ENABLED;
     public static final ModConfigSpec.IntValue URL_REFRESH_INTERVAL_HOURS;
     public static final ModConfigSpec.IntValue URL_REFRESH_CHECK_TIMEOUT_SECONDS;
 
-    // 歌词显示（方块音响 + 女仆气泡共用）
     public static final ModConfigSpec.BooleanValue LYRIC_SHOW_TRANSLATION;
     public static final ModConfigSpec.BooleanValue LYRIC_SHOW_ROMAJI;
 
@@ -102,9 +97,23 @@ public class ClientConfig {
 
     public static ProviderType getProvider() {
         try {
-            return ProviderType.valueOf(PROVIDER.get().toUpperCase());
+            ProviderType type = ProviderType.valueOf(PROVIDER.get().toUpperCase());
+            // 若未安装 netmusiccanneedqq 模组，QQ 渠道不可用，回退到网易云
+            if (type == ProviderType.QQ && !isQqModLoaded()) {
+                return ProviderType.NETEASE;
+            }
+            return type;
         } catch (IllegalArgumentException e) {
             return ProviderType.NETEASE;
+        }
+    }
+
+    public static boolean isQqModLoaded() {
+        try {
+            return net.neoforged.fml.ModList.get() != null
+                    && net.neoforged.fml.ModList.get().isLoaded("netmusiccanneedqq");
+        } catch (Throwable t) {
+            return false;
         }
     }
 

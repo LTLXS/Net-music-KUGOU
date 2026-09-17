@@ -18,15 +18,10 @@ import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 
-/**
- * 酷狗设备注册模块
- * 参照 KuGou server/module/register_dev.js 实现
- */
 public final class KuGouDeviceRegister {
 
     private static final Gson GSON = new Gson();
 
-    // RSA 公钥（酷狗概念版，PEM 去掉头尾和换行）
     private static final String RSA_PUBLIC_KEY =
             "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDECi0Np2UR87scwrvTr72L6oO01" +
             "rBbbBPriSDFPxr3Z5syug0O24QyQO8bg27+0+4kBzTBTBOZ/WWU0WryL1JSXRTXLg" +
@@ -37,9 +32,6 @@ public final class KuGouDeviceRegister {
 
     private KuGouDeviceRegister() {}
 
-    /**
-     * 设备注册结果
-     */
     public static class DeviceInfo {
         public final String dfid;
         public final String mid;
@@ -56,31 +48,18 @@ public final class KuGouDeviceRegister {
         }
     }
 
-    /**
-     * 注册设备，获取 dfid
-     * 参照 KuGou server/module/register_dev.js 实现
-     *
-     * @param token  登录 token (可为空)
-     * @param userid 用户 ID (可为空)
-     * @param mid    已有 mid (可为空，用于计算)
-     * @param guid   设备 GUID (可为空，会生成)
-     */
     public static DeviceInfo registerDevice(String token, String userid, String mid, String guid) throws Exception {
-        // 生成或使用已有的标识
         String devGuid = (guid != null && !guid.isEmpty()) ? guid : generateGuid();
         String devMid = (mid != null && !mid.isEmpty()) ? mid : calculateMid(devGuid);
 
-        // 构建设备信息 JSON
         Map<String, Object> deviceInfo = buildDeviceInfo(devGuid, devMid);
 
-        // AES 加密设备信息（作为 POST body 发送）
         AesEncryptResult aesResult = playlistAesEncrypt(GSON.toJson(deviceInfo));
 
         // RSA 加密 AES 密钥（空字符串视为未登录，用 0 占位确保 JSON 有效）
         String p = rsaEncrypt2("{\"aes\":\"" + aesResult.key + "\",\"uid\":" + parseUid(userid) +
                 ",\"token\":\"" + (token != null && !token.isEmpty() ? token : "") + "\"}");
 
-        // 构建 URL query 参数 (part, platid, p  + 默认安卓参数 + 签名)
         Map<String, Object> queryParams = new LinkedHashMap<>();
         queryParams.put("part", 1);
         queryParams.put("platid", 1);
@@ -94,7 +73,6 @@ public final class KuGouDeviceRegister {
         // 签名：注意 JS 中 signatureAndroidParams(params, data) 的 data 是 POST body
         queryParams.put("signature", KuGouSignature.signatureAndroidParams(queryParams, aesResult.str));
 
-        // 设置请求头（与 JS 的 createRequest 一致）
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
         headers.put("dfid", "-");
@@ -105,14 +83,12 @@ public final class KuGouDeviceRegister {
         headers.put("kg-rec", "1");
         headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
 
-        // POST: query params 在 URL，body 是原始 AES 密文，响应为二进制
         HttpUtils.BinaryHttpResponse response = HttpUtils.postRawBinary(REGISTER_URL, headers, queryParams, aesResult.str);
 
         if (!response.isOk()) {
             throw new RuntimeException("Device register HTTP error: " + response.statusCode);
         }
 
-        // 解密响应：二进制 → base64 字符串 → AES 解密
         String responseBase64 = Base64.getEncoder().encodeToString(response.body);
         String decryptedJson = playlistAesDecrypt(responseBase64, aesResult.key);
 
@@ -130,7 +106,6 @@ public final class KuGouDeviceRegister {
                 JsonObject data = dataElement.getAsJsonObject();
                 dfid = data.has("dfid") ? data.get("dfid").getAsString() : null;
             } else if (dataElement.isJsonArray()) {
-                // 某些情况下 data 返回为数组，取第一个元素
                 JsonArray dataArray = dataElement.getAsJsonArray();
                 if (!dataArray.isEmpty() && dataArray.get(0).isJsonObject()) {
                     JsonObject firstItem = dataArray.get(0).getAsJsonObject();
@@ -161,16 +136,10 @@ public final class KuGouDeviceRegister {
         }
     }
 
-    /**
-     * 生成设备 GUID (UUID v4 格式)
-     */
     public static String generateGuid() {
         return CryptoUtils.generateGuid();
     }
 
-    /**
-     * 计算 MID (基于 GUID 的 MD5 → BigInteger)
-     */
     public static String calculateMid(String guid) {
         String md5 = CryptoUtils.md5(guid);
         java.math.BigInteger result = java.math.BigInteger.ZERO;
@@ -185,9 +154,6 @@ public final class KuGouDeviceRegister {
         return result.toString();
     }
 
-    /**
-     * 构建设备信息
-     */
     private static Map<String, Object> buildDeviceInfo(String guid, String mid) {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("availableRamSize", 4983533568L);
@@ -224,19 +190,11 @@ public final class KuGouDeviceRegister {
         return info;
     }
 
-    /**
-     * playlist AES 加密（自动生成 6 位随机 key）
-     * 参照 JS: playlistAesEncrypt(data)
-     */
     static AesEncryptResult playlistAesEncrypt(String data) throws Exception {
         String rawKey = CryptoUtils.randomString(6).toLowerCase();
         return playlistAesEncrypt(data, rawKey);
     }
 
-    /**
-     * playlist AES 加密
-     * key = md5(rawKey).substring(0, 16), iv = md5(rawKey).substring(16, 32)
-     */
     static AesEncryptResult playlistAesEncrypt(String data, String rawKey) throws Exception {
         String md5Hex = CryptoUtils.md5(rawKey);
         String keyStr = md5Hex.substring(0, 16);
@@ -252,9 +210,6 @@ public final class KuGouDeviceRegister {
         return new AesEncryptResult(rawKey, Base64.getEncoder().encodeToString(encrypted));
     }
 
-    /**
-     * playlist AES 解密
-     */
     static String playlistAesDecrypt(String base64Data, String rawKey) throws Exception {
         String md5Hex = CryptoUtils.md5(rawKey);
         String keyStr = md5Hex.substring(0, 16);
@@ -270,9 +225,6 @@ public final class KuGouDeviceRegister {
         return new String(decrypted, StandardCharsets.UTF_8);
     }
 
-    /**
-     * RSA PKCS1 v1.5 加密 (对应 JS 的 rsaEncrypt2)
-     */
     public static String rsaEncrypt2(String data) throws Exception {
         byte[] keyBytes = Base64.getDecoder().decode(RSA_PUBLIC_KEY);
         X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
@@ -288,10 +240,6 @@ public final class KuGouDeviceRegister {
         return hex.toString();
     }
 
-    /**
-     * RSA 无填充加密 (对应 JS 的 cryptoRSAEncrypt)
-     * 数据会被零填充到 key 长度，然后取 raw encrypt 结果的十六进制大写
-     */
     public static String cryptoRsaEncrypt(String data) throws Exception {
         byte[] keyBytes = Base64.getDecoder().decode(RSA_PUBLIC_KEY);
         X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
@@ -314,12 +262,9 @@ public final class KuGouDeviceRegister {
         return hex.toString().toUpperCase();
     }
 
-    /**
-     * AES 加密（用于登录） = md5(key).substring(0,32) as key, last 16 as IV
-     */
     public static AesEncryptResult aesEncrypt(String data, String rawKey) throws Exception {
         String md5Hex = CryptoUtils.md5(rawKey);
-        String keyStr = md5Hex; // 32 hex chars → 32 bytes UTF-8 → AES-256
+        String keyStr = md5Hex;
         String ivStr = md5Hex.substring(md5Hex.length() - 16);
 
         SecretKeySpec keySpec = new SecretKeySpec(keyStr.getBytes(StandardCharsets.UTF_8), "AES");
@@ -334,9 +279,6 @@ public final class KuGouDeviceRegister {
         return new AesEncryptResult(rawKey, hex.toString());
     }
 
-    /**
-     * AES 解密（用于登录）
-     */
     public static String aesDecrypt(String hexData, String rawKey) throws Exception {
         String md5Hex = CryptoUtils.md5(rawKey);
         String keyStr = md5Hex;

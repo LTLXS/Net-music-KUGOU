@@ -5,9 +5,6 @@ import net.minecraft.client.gui.GuiGraphics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * QR 码渲染器 — 使用内嵌的 Nayuki qrcodegen 库（class 文件直接打包进 JAR）
- */
 public final class QrCodeRenderer {
 
     private QrCodeRenderer() {}

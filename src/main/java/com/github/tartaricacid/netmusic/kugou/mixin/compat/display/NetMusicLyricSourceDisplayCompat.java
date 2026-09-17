@@ -32,10 +32,10 @@ public class NetMusicLyricSourceDisplayCompat {
         try {
             KuGouDisplayCompat.KuGouLyricContext ctx =
                     KuGouDisplayCompat.getKuGouContext(context.getSourcePos(), context.level());
-            if (ctx == null) return; // 非酷狗，放行
+            if (ctx == null) return;
 
             if (ctx.record == null) {
-                cir.setReturnValue(Component.literal("歌词加载中..."));
+                cir.setReturnValue(Component.translatable("netmusic_kugou.display.lyric_loading"));
                 return;
             }
             String line = LyricCache.getCurrentLyricLine(ctx.record, ctx.progress);

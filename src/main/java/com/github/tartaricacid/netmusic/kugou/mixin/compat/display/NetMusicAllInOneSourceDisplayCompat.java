@@ -15,10 +15,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 在 NetMusicAllInOneSource.provideText 入口拦截酷狗歌曲。
- * 匹配原版格式：播放时第一行 "? {songName} [{mm}:{ss}]"，之后歌词/翻译行。
- */
 @Mixin(value = NetMusicAllInOneSource.class, remap = false)
 public class NetMusicAllInOneSourceDisplayCompat {
 
@@ -34,12 +30,11 @@ public class NetMusicAllInOneSourceDisplayCompat {
 
             if (ctx.record == null) {
                 lines.add(Component.literal(String.format("\u25B6 %s [--:--]", ctx.songName)));
-                lines.add(Component.literal("歌词加载中..."));
+                lines.add(Component.translatable("netmusic_kugou.display.lyric_loading"));
                 cir.setReturnValue(lines);
                 return;
             }
 
-            // 播放时间格式：和原版一致 "▶ {songName} [{mm}:{ss}]"
             int seconds = Math.max(0, ctx.currentTime / 20);
             int mm = seconds / 60;
             int ss = seconds % 60;

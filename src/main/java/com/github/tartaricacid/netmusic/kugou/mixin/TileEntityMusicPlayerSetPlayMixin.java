@@ -3,6 +3,7 @@ package com.github.tartaricacid.netmusic.kugou.mixin;
 import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.support.CdAddonData;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
@@ -69,8 +70,6 @@ public class TileEntityMusicPlayerSetPlayMixin {
         UUID playerId = null;
         try {
             TileEntityMusicPlayer self = (TileEntityMusicPlayer) (Object) this;
-            // 只在服务端执行：客户端 setPlayToClient 会在共享 PENDING map 里创建条目，
-            // 干扰服务端 tryTake，且客户端的 async refresh 回调无法 replay（isClientSide bail）。
             if (self.getLevel() != null && self.getLevel().isClientSide()) return;
             IItemHandler inv = self.getPlayerInv();
             if (inv == null) return;
@@ -85,13 +84,58 @@ public class TileEntityMusicPlayerSetPlayMixin {
             BlockPos pos = self.getBlockPos();
             Level level = self.getLevel();
 
-            // 尝试从 BlockPos 找是谁刚放的 CD：方块音响如果能通过 getPlayerId/getOwner 拿到最好。
+            // === 确定当前真正在播放的歌曲（用于显示牌跟随） ===
+            // 播放列表/netMusicList 模式下，槽位 0 的 CD 可能与实际播放的歌曲不一致，
+            // 所以用 setPlayToClient 收到的 info.songUrl 来识别真正播放的歌曲。
+            String activeHash = null;
+            String activeSongName = null;
+            int activeSongTime = 0;
+            if (info != null && info.songUrl != null
+                    && info.songUrl.startsWith("netmusiclib://source/kugou")) {
+                activeHash = KuGouDisplayCompat.extractHashFromNetmusiclibUrl(info.songUrl);
+                activeSongName = info.songName;
+                activeSongTime = info.songTime;
+            }
+            if ((activeHash == null || activeHash.isEmpty()) && addonOpt.isPresent()) {
+                activeHash = addonOpt.get().fileHash();
+            }
+            if (activeHash != null && !activeHash.isEmpty()
+                    && (activeSongName == null || activeSongTime <= 0)) {
+                ItemMusicCD.SongInfo cdInfo = ItemMusicCD.getSongInfo(cd);
+                if (cdInfo != null) {
+                    if (activeSongName == null) activeSongName = cdInfo.songName;
+                    if (activeSongTime <= 0) activeSongTime = cdInfo.songTime;
+                }
+            }
+            if (activeHash != null && !activeHash.isEmpty()) {
+                KuGouDisplayCompat.registerActiveSong(pos, activeHash,
+                        activeSongName != null ? activeSongName : "", activeSongTime);
+                // 服务端落库「精确总时长 + 待重置」：与 getKuGouContext/computeProgress 同侧（服务端），
+                // 这样进度算式 progress = 总时长 - currentTime 才能拿到精确总时长，
+                // 避免显示源首次求值时 currentTime 已播了几 tick 导致总时长偏小、歌词整体偏慢；
+                // 且每次 setPlayToClient（切歌/重放/自然循环）都重新落库，重放即可归零。
+                int totalSec = (info != null && info.songTime > 0) ? info.songTime : activeSongTime;
+                int totalTick = totalSec * 20 + 64;
+                KuGouDisplayCompat.notePlayStart(pos, totalTick);
+                // 同步把 currentTime 先设为估算总时长：setPlayToClient 内部是异步 resolve，
+                // 真正 setCurrentTime 在回调里才执行；若不在 HEAD 同步先设，
+                // 显示源在异步间隙读到的是上一首歌残留的 currentTime，
+                // 导致 progress 算错、翻牌板闪到结尾或卡在开头。
+                self.setCurrentTime(totalTick);
+            }
+
             // 父模组目前没有 owner 字段，只能先拿 null，KuGouPrefetch.tryTake 内部会遍历相同 pos 的预取兜底。
-            // 如果后续想精确化，可以在这里通过最近的 server player list + pos 距离找最近的 UUID。
 
             String oldCdUrl = CdNbtHelper.readSongUrl(cd);
             String oldInfoUrl = (info != null) ? info.songUrl : null;
 
+            // netMusicList 模式：songUrl 是 netmusiclib:// URI，交给 netMusicList 自己的解析器（MusicPlayManagerMixin）
+            // 实时解析，needkugou 的「直链覆盖 + 预取/重放」逻辑必须跳过，否则会把 kugou 预取/重放错误地套在
+            // netmusiclib 链接上，导致音频反复重启、卡顿。歌词归零由 getKuGouContext 的重放窗口处理，与播放无关。
+            boolean skipUrlOverride = NetMusicListCompat.isNetMusicListLoaded()
+                    && info != null && info.songUrl != null && info.songUrl.startsWith("netmusiclib://");
+
+            if (!skipUrlOverride) {
             // ====== 1. 先尝试命中 onRightClickJukebox 已经提前启动的异步预取（并行节省时间）======
             KuGouPrefetch.PrefetchResult res = KuGouPrefetch.tryTake(pos, playerId, level, oldCdUrl);
 
@@ -102,10 +146,7 @@ public class TileEntityMusicPlayerSetPlayMixin {
                 fromPrefetch = true;
             } else {
                 // ====== 2. 没命中（红石信号直接触发 playerMusic 等"根本没有 onRightClickJukebox 预取"的场景）时：
-                // 先起播，提交异步刷新，完事后回调切歌。这样绝对不会卡 setPlayToClient。
                 pickedUrl = (oldCdUrl == null) ? "" : oldCdUrl;
-                // 仅在"tryTake 根本没找到 entry"时才新建 future。
-                // 如果 tryTake 找到了 entry 但 future 在 200ms 内没完成，它已经挂了 whenComplete，
                 // 再创建新 future 会导致 URL 变更后触发 2 次 replay（同一变更被两个 future 各回调一次）。
                 if (!res.entryFound() && !KuGouPrefetch.isOnReplayCooldown(pos) && level != null && pos != null && cd != null) {
                     UUID dummyOwner = new UUID(0L, pos.asLong()); // pos 作为 key，和 RightClick 的 "null playerId" 兜底遍历对齐
@@ -149,21 +190,28 @@ public class TileEntityMusicPlayerSetPlayMixin {
                         oldCdUrl == null ? 0 : oldCdUrl.length(),
                         (System.currentTimeMillis() - t0));
             }
+            }
 
-            // ====== 5. 解析 CD 上的 LRC，写入 KuGouDisplayCompat 供 NetMusicDisplay 兼容层取用 ======
-            // LRC 是纯文本解析，不涉及网络调用；服务端可以独立做。
-            // NetMusicDisplay 的 LyricCache 只能从网易云 URL 提 ID，对酷狗 URL 返回 -1，
-            // LyricCacheDisplayCompat 会从 KuGouDisplayCompat 拿我们已经解析好的 LyricRecord。
+            // ====== 5. 把歌词写入 KuGouDisplayCompat 供 NetMusicDisplay 兼容层取用 ======
+            // 优先用 activeHash（真正播放的歌曲），而不是槽位 0 的 CD。
             try {
-                CdNbtHelper.Lyric stored = CdNbtHelper.readLyric(cd);
-                if (stored != null && stored.lrcText != null && !stored.lrcText.isEmpty()) {
-                    String transJson = CdNbtHelper.readLyricTranslation(cd);
-                    LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
-                            stored.lrcText, transJson,
-                            stored.songName != null ? stored.songName : (info != null ? info.songName : null));
-                    if (data != null && data.record != null) {
-                        KuGouDisplayCompat.putAll(pos, addon.fileHash(), data.record);
+                LyricRecord record = KuGouDisplayCompat.getLyricByHash(activeHash);
+                if (record == null) {
+                    CdNbtHelper.Lyric stored = CdNbtHelper.readLyric(cd);
+                    if (stored != null && stored.lrcText != null && !stored.lrcText.isEmpty()
+                            && activeHash != null && !activeHash.isEmpty()) {
+                        String transJson = CdNbtHelper.readLyricTranslation(cd);
+                        LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
+                                stored.lrcText, transJson,
+                                stored.songName != null ? stored.songName
+                                        : (info != null ? info.songName : null));
+                        if (data != null && data.record != null) {
+                            record = data.record;
+                        }
                     }
+                }
+                if (record != null && activeHash != null && !activeHash.isEmpty()) {
+                    KuGouDisplayCompat.putAll(pos, activeHash, record);
                 }
             } catch (Throwable ignored) {
             }

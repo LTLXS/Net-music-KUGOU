@@ -15,12 +15,6 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 客户端 ↔ 服务端：酷狗音乐搜索结果传输。
- * <p>
- * 客户端 → 服务端：携带 keyword + page，results 为空列表。
- * 服务端 → 客户端：携带 keyword + page + 搜索结果列表。
- */
 public record KuGouSearchMessage(
         String keyword,
         int page,
@@ -30,18 +24,10 @@ public record KuGouSearchMessage(
     public static final Type<KuGouSearchMessage> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(NetMusicKuGou.MOD_ID, "kugou_search"));
 
-    /**
-     * 简化构造器：客户端发起搜索时用，results 默认空。
-     */
     public KuGouSearchMessage(String keyword, int page) {
         this(keyword, page, new ArrayList<>());
     }
 
-    /**
-     * 单条 {@link KuGouSearchScreen.SearchResult} 的编解码器。
-     * 5 个字段（songName / singerName / duration / fileHash / albumId），
-     * 父模组烧录机实际只用到这些。
-     */
     public static final StreamCodec<RegistryFriendlyByteBuf, KuGouSearchScreen.SearchResult> SEARCH_RESULT_CODEC =
             StreamCodec.of(
                     (buf, r) -> {
@@ -76,35 +62,33 @@ public record KuGouSearchMessage(
         return TYPE;
     }
 
-    /**
-     * 处理函数：服务端执行搜索并回复；客户端把结果喂给 {@link KuGouSearchScreen}。
-     */
     public static void handle(KuGouSearchMessage message, IPayloadContext context) {
         if (context.flow().isServerbound()) {
-            // 客户端 → 服务端：发起搜索
-            context.enqueueWork(() -> {
-                if (!(context.player() instanceof net.minecraft.server.level.ServerPlayer player)) {
-                    return;
-                }
-                try {
-                    List<KuGouApiClient.Song> songs = KuGouApiClient.search(message.keyword, message.page, 10).get();
-                    List<KuGouSearchScreen.SearchResult> results = new ArrayList<>();
-                    for (KuGouApiClient.Song song : songs) {
-                        results.add(new KuGouSearchScreen.SearchResult(
-                                song.name,
-                                song.singer,
-                                song.duration,
-                                song.hash != null ? song.hash : "",
-                                song.albumId != null ? song.albumId : ""
-                        ));
+            if (context.player() instanceof net.minecraft.server.level.ServerPlayer player) {
+                // 异步执行搜索，避免 .get() 阻塞服务端主线程（酷狗 HTTP 超时可达 10s）
+                KuGouApiClient.search(message.keyword, message.page, 10).whenComplete((songs, err) -> {
+                    if (err != null) {
+                        KuGouLogger.error("Failed to search songs", err);
+                        return;
                     }
-                    NetworkHandler.sendToPlayer(player, new KuGouSearchMessage(message.keyword, message.page, results));
-                } catch (Exception e) {
-                    KuGouLogger.error("Failed to search songs", e);
-                }
-            });
+                    try {
+                        List<KuGouSearchScreen.SearchResult> results = new ArrayList<>();
+                        for (KuGouApiClient.Song song : songs) {
+                            results.add(new KuGouSearchScreen.SearchResult(
+                                    song.name,
+                                    song.singer,
+                                    song.duration,
+                                    song.hash != null ? song.hash : "",
+                                    song.albumId != null ? song.albumId : ""
+                            ));
+                        }
+                        NetworkHandler.sendToPlayer(player, new KuGouSearchMessage(message.keyword, message.page, results));
+                    } catch (Exception e) {
+                        KuGouLogger.error("Failed to build search results", e);
+                    }
+                });
+            }
         } else {
-            // 服务端 → 客户端：填到屏幕
             context.enqueueWork(() -> {
                 var screen = net.minecraft.client.Minecraft.getInstance().screen;
                 if (screen instanceof KuGouSearchScreen) {

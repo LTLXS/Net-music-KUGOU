@@ -6,7 +6,7 @@ plugins {
     id 'net.neoforged.moddev' version '1.0.14'
 }
 
-version = '1.0.5-release+neoforge1.21.1'
+version = '1.0.1-release+neoforge1.21.x'
 group = 'com.github.tartaricacid'
 
 base {
@@ -113,6 +113,11 @@ dependencies {
     // 文件由 buildscript_lib/ 提供，本地导入，build.gradle 在 buildscript_lib 缺失时报错。
     compileOnly files('buildscript_lib/create-1.21.1-6.0.10.jar')
     compileOnly files('buildscript_lib/NetMusicDisplay-1.0.5-1.21.1-NeoForge.jar')
+    // netMusicList 兼容层：接管它自带的 Create 显示链接源 LyricSource（mixin 编译需看见目标类）
+    compileOnly files('buildscript_lib/net_music_list-4.3.jar')
+
+    // 单元测试：JUnit 4
+    testImplementation 'junit:junit:4.13.2'
 }
 
 // ============== 离线补丁：把 neoform/minecraft-dependencies/loader 等
@@ -197,15 +202,23 @@ jar {
 tasks.register('copyToMods') {
     dependsOn 'jar'
     doLast {
-        def target = 'D:\\pcl ce\\0-1\\.minecraft\\versions\\modtest\\mods\\netmusic_kugou-1.0.0-beta-neoforge+mc1.21.1.jar'
+        def targetDir = file('D:\\pcl ce\\0-1\\.minecraft\\versions\\modtest\\mods')
         def source = file("$buildDir/libs/netmusic_kugou-${version}.jar")
-        if (source.exists()) {
-            try {
-                ant.copy(file: source.absolutePath, tofile: target, overwrite: true)
-                println "[NetMusicKuGou] Copied JAR to $target (${source.length()} bytes)"
-            } catch (Exception e) {
-                println "[NetMusicKuGou] WARN: Failed to copy to mods (probably locked by PCL2): ${e.message}"
+        if (!source.exists()) {
+            println "[NetMusicKuGou] WARN: Source JAR not found: $source"
+            return
+        }
+        try {
+            // 清理旧版本 netmusic_kugou jar，避免 1.20.1/Forge 旧 jar 残留导致 NeoForge 1.21.1 加载警告
+            targetDir.listFiles()?.findAll { it.isFile() && it.name.toLowerCase().startsWith('netmusic_kugou') && it.name.toLowerCase().endsWith('.jar') }?.each { oldJar ->
+                println "[NetMusicKuGou] Removing old JAR: ${oldJar.absolutePath}"
+                oldJar.delete()
             }
+            def targetJar = new File(targetDir, "netmusic_kugou-${version}.jar")
+            ant.copy(file: source.absolutePath, tofile: targetJar.absolutePath, overwrite: true)
+            println "[NetMusicKuGou] Copied JAR to ${targetJar.absolutePath} (${source.length()} bytes)"
+        } catch (Exception e) {
+            println "[NetMusicKuGou] WARN: Failed to copy to mods (probably locked by PCL2): ${e.message}"
         }
     }
 }

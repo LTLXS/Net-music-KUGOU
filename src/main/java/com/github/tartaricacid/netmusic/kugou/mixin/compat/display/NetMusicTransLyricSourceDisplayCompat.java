@@ -13,9 +13,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * 在 NetMusicTransLyricSource.provideLine 入口拦截酷狗翻译歌词。
- */
 @Mixin(value = NetMusicTransLyricSource.class, remap = false)
 public class NetMusicTransLyricSourceDisplayCompat {
 
@@ -28,11 +25,11 @@ public class NetMusicTransLyricSourceDisplayCompat {
             if (ctx == null) return;
 
             if (ctx.record == null) {
-                cir.setReturnValue(Component.literal("歌词加载中..."));
+                cir.setReturnValue(Component.translatable("netmusic_kugou.display.lyric_loading"));
                 return;
             }
             if (!LyricCache.hasTranslation(ctx.record)) {
-                cir.setReturnValue(Component.literal("无翻译歌词"));
+                cir.setReturnValue(Component.translatable("netmusic_kugou.display.no_translation"));
                 return;
             }
             String line = LyricCache.getCurrentTransLyricLine(ctx.record, ctx.progress);

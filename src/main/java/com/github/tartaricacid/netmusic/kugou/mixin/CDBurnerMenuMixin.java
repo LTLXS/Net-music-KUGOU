@@ -42,7 +42,6 @@ public class CDBurnerMenuMixin {
                 return;
             }
 
-            // 写入原曲识别信息（供 UrlRefresher 续期用）
             CdNbtHelper.writeOriginalInfo(cd, fileHash, albumId);
 
             // 同步写入歌词（已在客户端刻录时拉取完成）
@@ -54,8 +53,6 @@ public class CDBurnerMenuMixin {
                 }
                 KuGouLogger.info("CDBurnerMenuMixin: lyric written at burn time ({} chars)", lrc.length());
 
-                // 解析后立即填入 KuGouDisplayCompat：让 NetMusicDisplay 在播放器第一次
-                // setPlayToClient 之前就能取到 LyricRecord（Create DisplayLink 在服务端
                 // 调 provideLine 时，setPlayToClient 不一定已被触发）。
                 try {
                     LrcConverter.KuGouLyricData lyricData = LrcConverter.toLyricData(lrc, lrcTrans, song);

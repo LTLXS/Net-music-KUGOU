@@ -32,15 +32,6 @@ public final class MirrorLyricRenderer {
     private MirrorLyricRenderer() {
     }
 
-    /**
-     * 渲染一行歌词（可选左右镜像）。
-     *
-     * @param line      歌词组件
-     * @param baseline  字体空间的顶部 y（drawInBatch 的 y 参数语义）
-     * @param lineColor 文字颜色（含透明度，由调用方决定）
-     * @param mirrored  true = 左右镜像（照镜子式）；false = 正常文字
-     * @param mode      渲染模式（镜像行用 SEE_THROUGH 防被方块遮挡）
-     */
     public static void render(PoseStack poseStack, MultiBufferSource.BufferSource textSource,
                               Font font, Component line, float baseline,
                               int lineColor, int combinedLightIn,
@@ -68,7 +59,6 @@ public final class MirrorLyricRenderer {
         }
     }
 
-    /** 包装 BufferSource：每个 getBuffer 返回镜像 Proxy，并登记待冲刷的 handler */
     private static final class MirrorSource implements MultiBufferSource {
         private final MultiBufferSource.BufferSource delegate;
         private final java.util.List<MirrorHandler> handlers = new java.util.ArrayList<>();
@@ -98,7 +88,6 @@ public final class MirrorLyricRenderer {
      */
     private static final class MirrorHandler implements java.lang.reflect.InvocationHandler {
         private final VertexConsumer real;
-        /** 已完成的顶点（每个顶点 = 一组有序调用记录 [Method, args]） */
         private final java.util.List<java.util.List<Object[]>> vertices = new java.util.ArrayList<>();
         private java.util.List<Object[]> current = new java.util.ArrayList<>();
         private VertexConsumer proxy;
@@ -127,7 +116,6 @@ public final class MirrorLyricRenderer {
                 String name = method.getName();
                 boolean isVertex = "addVertex".equals(name) || "vertex".equals(name);
                 if (isVertex) {
-                    // 收尾上一个顶点；每满 4 个顶点倒序回放
                     if (!current.isEmpty()) {
                         vertices.add(current);
                         current = new java.util.ArrayList<>();
@@ -147,7 +135,6 @@ public final class MirrorLyricRenderer {
                 if (rt == int.class) return 0;
                 return proxy;
             } catch (Throwable t) {
-                // 兜底：直接透传原始调用（不翻转），保证不崩溃
                 return method.invoke(real, args);
             }
         }
@@ -174,7 +161,6 @@ public final class MirrorLyricRenderer {
             vertices.clear();
         }
 
-        /** 结束时冲刷不满 4 顶点的残余 quad */
         void flushPending() {
             try {
                 if (!current.isEmpty()) {
@@ -185,7 +171,6 @@ public final class MirrorLyricRenderer {
                     emitReversed();
                 }
             } catch (Throwable ignored) {
-                // 放弃残余顶点（最多丢一个字形）
             }
         }
     }
