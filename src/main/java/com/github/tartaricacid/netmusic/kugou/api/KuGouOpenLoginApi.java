@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.api;
 
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfig;
+import com.github.tartaricacid.netmusic.kugou.config.OpenSecrets;
 import com.github.tartaricacid.netmusic.kugou.util.CryptoUtils;
 import com.github.tartaricacid.netmusic.kugou.util.HttpUtils;
 import com.github.tartaricacid.netmusic.kugou.util.KuGouSignature;
@@ -27,16 +28,14 @@ public final class KuGouOpenLoginApi {
 
     private static final String OPENPLAT_LOGIN_URL = "https://gateway.kugou.com/v6/login_by_openplat";
 
-    private static final String QQ_APPID = "SECRET_REMOVED";
-    private static final String QQ_APK_SIG_MD5 = "SECRET_REMOVED";
+    // OpenSecrets.QQ_APPID / OpenSecrets.QQ_APK_SIG_MD5 / OpenSecrets.WX_APPID / OpenSecrets.WX_SECRET 等私密凭据已外部化到 OpenSecrets
+    // （从环境变量或 classpath 的 secret.properties 读取，源码不再硬编码，避免提交到公开仓库泄露）。
     private static final String QQ_AUTHORIZE_URL = "https://openmobile.qq.com/oauth2.0/m_authorize";
     private static final String QQ_QR_SHOW_URL = "https://xui.ptlogin2.qq.com/ssl/ptqrshow";
     private static final String QQ_QR_LOGIN_URL = "https://xui.ptlogin2.qq.com/ssl/ptqrlogin";
     private static final String QQ_AID = "716027609";
     private static final String QQ_DAID = "381";
 
-    private static final String WX_APPID = "SECRET_REMOVED";
-    private static final String WX_SECRET = "SECRET_REMOVED";
     private static final String WX_TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/token";
     private static final String WX_TICKET_URL = "https://api.weixin.qq.com/cgi-bin/ticket/getticket";
     private static final String WX_QRCONNECT_URL = "https://open.weixin.qq.com/connect/sdk/qrconnect";
@@ -118,7 +117,7 @@ public final class KuGouOpenLoginApi {
             QrTicket ticket = new QrTicket(Provider.QQ);
             try {
                 long time = System.currentTimeMillis() / 1000;
-                String sign = CryptoUtils.md5(QQ_APK_SIG_MD5 + "_" + time);
+                String sign = CryptoUtils.md5(OpenSecrets.QQ_APK_SIG_MD5 + "_" + time);
 
                 Map<String, Object> authParams = new LinkedHashMap<>();
                 authParams.put("cancel_display", 1);
@@ -129,7 +128,7 @@ public final class KuGouOpenLoginApi {
                 authParams.put("sdkv", "3.5.11.lite");
                 authParams.put("response_type", "token");
                 authParams.put("status_os", "11");
-                authParams.put("client_id", QQ_APPID);
+                authParams.put("client_id", OpenSecrets.QQ_APPID);
                 authParams.put("switch", "1");
                 authParams.put("status_version", "30");
                 authParams.put("show_download_ui", "true");
@@ -167,7 +166,7 @@ public final class KuGouOpenLoginApi {
                 qrParams.put("type", 0);
                 qrParams.put("t", String.valueOf(Math.random()));
                 qrParams.put("daid", QQ_DAID);
-                qrParams.put("pt_3rd_aid", QQ_APPID);
+                qrParams.put("pt_3rd_aid", OpenSecrets.QQ_APPID);
 
                 Map<String, String> qrHeaders = browserHeaders(xloginUrl);
                 qrHeaders.put("Cookie", cookieHeader(ticket.cookies));
@@ -214,7 +213,7 @@ public final class KuGouOpenLoginApi {
                 params.put("ptqrtoken", ticket.ptqrtoken);
                 params.put("daid", QQ_DAID);
                 params.put("aid", QQ_AID);
-                params.put("pt_3rd_aid", QQ_APPID);
+                params.put("pt_3rd_aid", OpenSecrets.QQ_APPID);
                 params.put("pt_openlogin_data", ticket.ptOpenloginData);
                 params.put("device", 2);
                 params.put("ptopt", 1);
@@ -280,7 +279,7 @@ public final class KuGouOpenLoginApi {
                     return new PollResult(PollState.ERROR, "QQ 登录成功但未拿到 openid / access_token");
                 }
 
-                LoginOutcome outcome = loginByOpenplat(openid, accessToken, 1, QQ_APPID);
+                LoginOutcome outcome = loginByOpenplat(openid, accessToken, 1, OpenSecrets.QQ_APPID);
                 if (outcome.success) {
                     return new PollResult(PollState.SUCCESS, "登录成功", outcome.token, outcome.userid);
                 }
@@ -298,8 +297,8 @@ public final class KuGouOpenLoginApi {
             try {
                 Map<String, Object> tokenParams = new LinkedHashMap<>();
                 tokenParams.put("grant_type", "client_credential");
-                tokenParams.put("appid", WX_APPID);
-                tokenParams.put("secret", WX_SECRET);
+                tokenParams.put("appid", OpenSecrets.WX_APPID);
+                tokenParams.put("secret", OpenSecrets.WX_SECRET);
                 HttpUtils.HttpResponse tokenResp = HttpUtils.get(WX_TOKEN_URL, null, tokenParams);
                 JsonObject tokenJson = parse(tokenResp.body);
                 String wxToken = tokenJson != null && tokenJson.has("access_token")
@@ -323,11 +322,11 @@ public final class KuGouOpenLoginApi {
 
                 long timestamp = System.currentTimeMillis();
                 String noncestr = CryptoUtils.md5(CryptoUtils.randomString(16));
-                String signature = CryptoUtils.sha1("appid=" + WX_APPID + "&noncestr=" + noncestr
+                String signature = CryptoUtils.sha1("appid=" + OpenSecrets.WX_APPID + "&noncestr=" + noncestr
                         + "&sdk_ticket=" + sdkTicket + "&timestamp=" + timestamp);
 
                 Map<String, Object> qrParams = new LinkedHashMap<>();
-                qrParams.put("appid", WX_APPID);
+                qrParams.put("appid", OpenSecrets.WX_APPID);
                 qrParams.put("noncestr", noncestr);
                 qrParams.put("timestamp", timestamp);
                 qrParams.put("scope", "snsapi_userinfo");
@@ -417,8 +416,8 @@ public final class KuGouOpenLoginApi {
     private static LoginOutcome loginByWechatCode(String code) {
         try {
             Map<String, Object> params = new LinkedHashMap<>();
-            params.put("secret", WX_SECRET);
-            params.put("appid", WX_APPID);
+            params.put("secret", OpenSecrets.WX_SECRET);
+            params.put("appid", OpenSecrets.WX_APPID);
             params.put("code", code);
             params.put("grant_type", "authorization_code");
             HttpUtils.HttpResponse resp = HttpUtils.get(WX_ACCESS_TOKEN_URL, null, params);
