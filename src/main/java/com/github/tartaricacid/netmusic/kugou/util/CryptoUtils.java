@@ -8,9 +8,9 @@ import java.util.UUID;
 
 public final class CryptoUtils {
     /**
-     * 用于 AES key / GUID / 登录 randomKey 等加密相关场景的随机源。
-     * 不可改用 {@link java.util.Random} / {@link Math#random()}（48-bit LCG 可预测）。
-     */
+ 用于 AES key / GUID / 登录 randomKey 等加密相关场景的随机源。
+ 不可改用 java.util.Random / random()（48-bit LCG 可预测）。
+*/
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private CryptoUtils() {}
@@ -26,6 +26,21 @@ public final class CryptoUtils {
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("MD5 algorithm not found", e);
+        }
+    }
+
+    /** SHA-1（小写 hex），微信开放平台 qrconnect 签名用 */
+    public static String sha1(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-1 algorithm not found", e);
         }
     }
 
@@ -50,8 +65,8 @@ public final class CryptoUtils {
     }
 
     /**
-     * 生成 UUID v4 格式的 GUID（内部即 SecureRandom）。
-     */
+ 生成 UUID v4 格式的 GUID（内部即 SecureRandom）。
+*/
     public static String generateGuid() {
         return UUID.randomUUID().toString();
     }

@@ -21,14 +21,12 @@ import java.security.cert.X509Certificate;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 周期巡检器：扫描玩家物品栏和末影箱里的所有音乐 CD，
- * 发现烧入的 songUrl 已经失效（酷狗返回 403）就重新拉一个 URL 写回去。
- * <p>
- * 触发方式：{@code NetMusicKuGou.urlRefreshScheduler} 每 N 小时跑一次 {@link #scanAll()}。
- * <p>
- * 注意：只有本 mod 烧进去的 CD（{@code CdNbtHelper.readOriginalInfo} 能读到 fileHash 的）才会被处理。
- * 没有本 mod 烧入标识的 CD、或用户手动编辑的 CD 都会被跳过，避免误改。
- */
+ 周期巡检器：扫描玩家物品栏和末影箱里的所有音乐 CD，
+ 发现烧入的 songUrl 已经失效（酷狗返回 403）就重新拉一个 URL 写回去。
+ 触发方式：NetMusicKuGou.urlRefreshScheduler 每 N 小时跑一次 scanAll()。
+ 注意：只有本 mod 烧进去的 CD（CdNbtHelper.readOriginalInfo 能读到 fileHash 的）才会被处理。
+ 没有本 mod 烧入标识的 CD、或用户手动编辑的 CD 都会被跳过，避免误改。
+*/
 public class UrlRefresher {
 
     public void scanAll() {
@@ -77,18 +75,17 @@ public class UrlRefresher {
     }
 
     /**
-     * 检查单个 CD（插入唱片机/右键点歌时调用）：
-     * <b>不做 isExpired 判断,无条件刷新 URL</b>。
-     * 因为 fs.youthandroid2.kugou.com/YYYYMMDDHHMM/... 这类时间戳 URL 过期后,
-     * 服务端会返回 302 跳错误页 / 200 text/html / 400,不会按预期 403,
-     * 导致 isExpired 经常误判"仍然有效"→不刷新→播放失败。
-     * 插入唱片机/点歌属于低频操作,直接刷新最稳。
-     *
-     * @return true 表示成功续期了 URL（或刷新后与原 URL 相同,但调用方一般会认为 OK）
-     */
+ 检查单个 CD（插入唱片机/右键点歌时调用）：
+ 不做 isExpired 判断,无条件刷新 URL。
+ 因为 fs.youthandroid2.kugou.com/YYYYMMDDHHMM/... 这类时间戳 URL 过期后,
+ 服务端会返回 302 跳错误页 / 200 text/html / 400,不会按预期 403,
+ 导致 isExpired 经常误判"仍然有效"→不刷新→播放失败。
+ 插入唱片机/点歌属于低频操作,直接刷新最稳。
+
+ @return true 表示成功续期了 URL（或刷新后与原 URL 相同,但调用方一般会认为 OK）
+*/
     public boolean forceRefreshOne(ItemStack cd) {
         // netMusicList 兼容模式：碟必须保留 netmusiclib://source/kugou?id=... URI，
-        // 由对方的 IMusicParser 实时解析直链；改写成真实直链会让对方无法映射回酷狗源，
         // 导致封面/播放全部失效（"放一次唱片机后封面消失"的根因）。
         if (NetMusicListCompat.isNetMusicListLoaded()) {
             return false;
@@ -131,14 +128,13 @@ public class UrlRefresher {
     }
 
     /**
-     * 检查单个 CD（周期巡检背包/末影箱调用）：
-     * - 没有 fileHash 记录 → 跳过
-     * - URL 内置时间戳超过 10 分钟 → 直接刷新
-     * - HEAD / Range-GET 判定为过期（403 / 410 / 302 跳非音频页 / 2xx 但 Content-Type!=audio）→ 刷新
-     * <p>
-     * 此方法会阻塞调用线程（HEAD + getSongUrl），适合在调度线程里调用。
-     * @return true 表示成功续期了 URL
-     */
+ 检查单个 CD（周期巡检背包/末影箱调用）：
+ - 没有 fileHash 记录 → 跳过
+ - URL 内置时间戳超过 10 分钟 → 直接刷新
+ - HEAD / Range-GET 判定为过期（403 / 410 / 302 跳非音频页 / 2xx 但 Content-Type!=audio）→ 刷新
+ 此方法会阻塞调用线程（HEAD + getSongUrl），适合在调度线程里调用。
+ @return true 表示成功续期了 URL
+*/
     public boolean tryRefreshOne(ItemStack cd) {
         // 同上：netMusicList 模式下不改写碟的 songUrl（保留 netmusiclib:// URI）
         if (NetMusicListCompat.isNetMusicListLoaded()) {
@@ -197,18 +193,13 @@ public class UrlRefresher {
     }
 
     /**
-     * 用多种规则判断 URL 是否已过期：
-     * <ol>
-     *   <li>快速规则：若 URL 匹配 {@code /YYYYMMDDHHMM/} 时间戳路径，超过 10 分钟直接算过期</li>
-     *   <li>HEAD 请求：
-     *     <ul>
-     *       <li>403 / 410 / 400 → 过期</li>
-     *       <li>302：跳转后 Location 明显不是音频页（跳转域名不含 kugou / url 不含路径 hash）→ 过期</li>
-     *       <li>2xx：如果 Content-Type 不是 audio/* / application/octet-stream → 过期（大概率是 200 HTML 错误页）</li>
-     *     </ul>
-     *   </li>
-     * </ol>
-     */
+ 用多种规则判断 URL 是否已过期：
+ - 快速规则：若 URL 匹配 /YYYYMMDDHHMM/ 时间戳路径，超过 10 分钟直接算过期
+ - HEAD 请求：
+ - 403 / 410 / 400 → 过期
+ - 302：跳转后 Location 明显不是音频页（跳转域名不含 kugou / url 不含路径 hash）→ 过期
+ - 2xx：如果 Content-Type 不是 audio/* / application/octet-stream → 过期（大概率是 200 HTML 错误页）
+*/
     private boolean isExpired(String url) {
         java.util.regex.Matcher m = TIMESTAMP_URL.matcher(url);
         if (m.find()) {

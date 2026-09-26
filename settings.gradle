@@ -11,7 +11,6 @@ pluginManagement {
 
 plugins {
     // 已使用 org.gradle.java.home 指向本地 JDK 21，不需要 foojay 自动下载
-    // id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
 }
 
 dependencyResolutionManagement {

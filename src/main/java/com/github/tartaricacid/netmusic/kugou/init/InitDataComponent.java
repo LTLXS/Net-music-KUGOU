@@ -8,14 +8,12 @@ import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 /**
- * 父 mod 的 ItemMusicCD 已完全 DataComponent 化，不挂 NBT tag，
- * addon 需要自建 DataComponent 用来存放自己的元数据。
- *
- * <p>挂在 {@link net.minecraft.world.item.ItemStack} 上的字段：</p>
- * <ul>
- *   <li>{@link #CD_ADDON_DATA} — {@link CdAddonData}（fileHash, albumId, burnTime, lrc, lrcTrans）</li>
- * </ul>
- */
+ 父 mod 的 ItemMusicCD 已完全 DataComponent 化，不挂 NBT tag，
+ addon 需要自建 DataComponent 用来存放自己的元数据。
+
+ 挂在 net.minecraft.world.item.ItemStack 上的字段：
+ - CD_ADDON_DATA — CdAddonData（fileHash, albumId, burnTime, lrc, lrcTrans）
+*/
 public class InitDataComponent {
     public static final DeferredRegister.DataComponents DATA_COMPONENT_TYPES =
             DeferredRegister.createDataComponents(

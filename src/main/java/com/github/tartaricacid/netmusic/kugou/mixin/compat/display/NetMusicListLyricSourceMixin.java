@@ -16,23 +16,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 接管 netMusicList 自带的 Create 显示链接源
- * {@code com.gly091020.netMusicListNeoforge.create.musicPlayerSource.LyricSource}。
- * <p>
- * <b>为什么要接管它</b>：netMusicList 自己实现了一套 Create 显示源，直接读
- * {@code TileEntityMusicPlayer} 的 {@code lyricRecord} / {@code getCurrentTime()} / {@code songTime}
- * 自行推算进度，<b>完全不走</b>本模组的 {@link KuGouDisplayCompat} 兼容层。
- * 结果就是：玩家把显示链接源选成 netMusicList 的那个时，我们的进度修复（总时长取权威
- * {@code songTimeSec}、重放归零）统统不生效，表现为「掐掉重放歌词不重置」。
- * <p>
- * <b>接管策略</b>：酷狗歌曲且歌词就绪时，用 {@link KuGouDisplayCompat#getKuGouContext} 算出的
- * {@code ctx.progress}（重放会正确归零）取当前行并 cancel 原实现；
- * 非酷狗歌曲 / 歌词未就绪时<b>不</b> cancel，交还 netMusicList 原逻辑，不影响它自己的源。
- * <p>
- * <b>依赖注意</b>：取行用 {@link KuGouDisplayCompat#currentLyricLine}，刻意避开
- * {@code com.netmusicdisplay.source.LyricCache}——那是 NetMusicDisplay 的可选类，
- * 引用它会让「只装 netMusicList、没装 NetMusicDisplay」的环境抛 NoClassDefFoundError。
- */
+ 接管 netMusicList 自带的 Create 显示链接源
+ com.gly091020.netMusicListNeoforge.create.musicPlayerSource.LyricSource。
+ 它自行从 lyricRecord / getCurrentTime() / songTime 推算进度，不走 KuGouDisplayCompat，
+ 本插件的进度修复（总时长取权威 songTimeSec、重放归零）不会生效。
+ 策略：酷狗歌曲且歌词就绪时用 getKuGouContext 的 ctx.progress 取行并 cancel 原实现；
+ 非酷狗或歌词未就绪时不 cancel，交还原逻辑。
+ 依赖注意：取行用 currentLyricLine，避免引用可选类 com.netmusicdisplay.source.LyricCache
+ （缺失该模组的环境会抛 NoClassDefFoundError）。*/
 @Mixin(value = LyricSource.class, remap = false)
 public class NetMusicListLyricSourceMixin {
 
@@ -45,7 +36,6 @@ public class NetMusicListLyricSourceMixin {
         try {
             KuGouDisplayCompat.KuGouLyricContext ctx =
                     KuGouDisplayCompat.getKuGouContext(context.getSourcePos(), context.level());
-            // ctx == null：不是酷狗歌曲 / 音乐机没在播放 → 放行，交还 netMusicList 原实现
             if (ctx == null || ctx.record == null) {
                 if (++callCount % 20 == 0) {
                     KuGouLogger.info("[NMLLyric] PASS-THROUGH (原实现接管) pos={} ctxNull={} recNull={} n={}",

@@ -7,18 +7,16 @@ import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 
 /**
- * 父 mod 的 ItemMusicCD 不挂 NBT tag，用 DataComponent。
- * addon 自己的元数据封装到本 record，挂到 {@link net.minecraft.world.item.ItemStack} 上。
- *
- * <p>字段含义：</p>
- * <ul>
- *   <li>{@code fileHash} — 酷狗 fileHash（URL 续期 key）</li>
- *   <li>{@code albumId} — 酷狗 albumId（URL 续期 key）</li>
- *   <li>{@code burnTime} — 烧录时间戳（ms）</li>
- *   <li>{@code lrc} — 原文 LRC（multiline string）</li>
- *   <li>{@code lrcTrans} — 翻译 LRC（multiline string，可能为空）</li>
- * </ul>
- */
+ 父 mod 的 ItemMusicCD 不挂 NBT tag，用 DataComponent。
+ addon 自己的元数据封装到本 record，挂到 net.minecraft.world.item.ItemStack 上。
+
+ 字段含义：
+ - fileHash — 酷狗 fileHash（URL 续期 key）
+ - albumId — 酷狗 albumId（URL 续期 key）
+ - burnTime — 烧录时间戳（ms）
+ - lrc — 原文 LRC（multiline string）
+ - lrcTrans — 翻译 LRC（multiline string，可能为空）
+*/
 public record CdAddonData(
         String fileHash,
         String albumId,

@@ -93,7 +93,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
             } catch (Throwable ignored) {
             }
         }
-        // netMusicList 已加载：酷狗源走对方的源选择器，needkugou 不再注入任何按钮
         if (NetMusicListCompat.isNetMusicListLoaded()) {
             return;
         }
@@ -439,7 +438,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
 
     @Inject(method = "handleCraftButton", at = @At("HEAD"), cancellable = true, require = 0, remap = false)
     private void netmusickugou$handleCraftButton(CallbackInfo ci) {
-        // netMusicList 已加载：交给对方的 handleCraftButton 处理刻录，needkugou 不接管（不 cancel）
         if (NetMusicListCompat.isNetMusicListLoaded()) {
             return;
         }

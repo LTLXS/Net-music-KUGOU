@@ -5,6 +5,7 @@ import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouVipApi;
 import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.config.ClientConfig;
+import com.github.tartaricacid.netmusic.kugou.config.ServerConfig;
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfig;
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfigScreen;
 import com.github.tartaricacid.netmusic.kugou.init.InitDataComponent;
@@ -53,16 +54,14 @@ import java.nio.file.Path;
 import java.util.UUID;
 
 /**
- * 酷狗音乐源插件主入口（NeoForge 1.21.1）。
- * <p>本类只负责装配：注册配置/网络/事件，并把具体职责转发给各自的组件类：
- * <ul>
- *   <li>{@link KuGouConfigScreen} —— Cloth Config 配置界面</li>
- *   <li>{@link LoginStateManager} —— 登录态持久化</li>
- *   <li>{@link AudioStreamHandlerInjector} —— 酷狗音频处理器反射注入</li>
- *   <li>{@link CdReplayHelper} —— CD URL 续期回写 / 延迟重播</li>
- *   <li>{@link VipRetryScheduler} / {@link UrlRefreshScheduler} —— 周期任务调度</li>
- * </ul>
- */
+ 酷狗音乐源插件主入口（NeoForge 1.21.1）。
+ 本类只负责装配：注册配置/网络/事件，并把具体职责转发给各自的组件类：
+ - KuGouConfigScreen —— Cloth Config 配置界面
+ - LoginStateManager —— 登录态持久化
+ - AudioStreamHandlerInjector —— 酷狗音频处理器反射注入
+ - CdReplayHelper —— CD URL 续期回写 / 延迟重播
+ - VipRetryScheduler / UrlRefreshScheduler —— 周期任务调度
+*/
 @Mod(NetMusicKuGou.MOD_ID)
 @EventBusSubscriber(modid = NetMusicKuGou.MOD_ID, bus = EventBusSubscriber.Bus.GAME)
 public class NetMusicKuGou {
@@ -81,6 +80,10 @@ public class NetMusicKuGou {
         }
 
         modContainer.registerConfig(ModConfig.Type.CLIENT, ClientConfig.SPEC, "NETMUSICCANNEEDKUGOU/netmusic-kugou-client.toml");
+        // 用 COMMON 而非 SERVER：NeoForge 的 SERVER 配置只有在连入服务器后才会加载，
+        // 主菜单打开配置界面时尚未加载，调用 .get() 会抛 "Cannot get config value before config is loaded"。
+        // COMMON 在客户端启动即加载、专用服务器也加载，且不走服务端同步，正好满足 VIP Cookie 两端可读的需求。
+        modContainer.registerConfig(ModConfig.Type.COMMON, ServerConfig.SPEC, "NETMUSICCANNEEDKUGOU/netmusic-kugou-server.toml");
 
         InitDataComponent.DATA_COMPONENT_TYPES.register(modEventBus);
 
@@ -99,6 +102,8 @@ public class NetMusicKuGou {
 
     private void setup(FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
+            // 应用配置里的日志级别（setup 在配置加载之后才执行，此时读取不会再抛 "before config is loaded"）
+            KuGouLogger.setLevel(ServerConfig.getLogLevel());
             LoginStateManager.loadState();
 
             // 若 netMusicList 已加载，把酷狗注册为它的音乐源（纯反射 + 动态代理，编译期零依赖）
@@ -125,11 +130,10 @@ public class NetMusicKuGou {
     }
 
     /**
-     * 客户端进入世界（加入 singleplayer / 多人服）时立即触发一次 VIP 领取。
-     * <p>
-     * <b>必须 static</b>：{@link NetMusicKuGou} 类带 {@code @EventBusSubscriber}，
-     * NeoForge 的 {@code AutomaticEventSubscriber} 要求 {@code @SubscribeEvent} 方法为 static。
-     */
+ 客户端进入世界（加入 singleplayer / 多人服）时立即触发一次 VIP 领取。
+ 必须 static：NetMusicKuGou 类带 @EventBusSubscriber，
+ NeoForge 的 AutomaticEventSubscriber 要求 @SubscribeEvent 方法为 static。
+*/
     @SubscribeEvent
     public static void onClientLoggingIn(ClientPlayerNetworkEvent.LoggingIn event) {
         // ===== 第一步：注入酷狗专属 AudioStreamHandler（优先级最高，避免 DirectHttpHandler 用网易云 UA 拉酷狗 403）=====
@@ -154,7 +158,24 @@ public class NetMusicKuGou {
 
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
+        // 专用服务器适配：若服务端配置了 VIP Cookie，则将其解析为酷狗登录态，
+        // 使 CD URL 续期 / 预取在专用服务器上也能运行（无需客户端扫码登录）。
+        applyServerVipCookie();
         UrlRefreshScheduler.start();
+    }
+
+    /**
+ 把服务端配置的 VIP Cookie 应用到 KuGouConfig 登录态。
+ 专用服务器没有客户端扫码流程，因此通过配置文件里的 cookie 来"登录"。
+*/
+    private static void applyServerVipCookie() {
+        String cookie = ServerConfig.getVipCookie();
+        if (cookie == null || cookie.isBlank()) {
+            return;
+        }
+        KuGouConfig.applyCookieString(cookie);
+        LoginStateManager.saveState();
+        KuGouLogger.info("Applied server-side VIP Cookie. Logged in: {}", KuGouConfig.isLoggedIn());
     }
 
     @SubscribeEvent
@@ -240,8 +261,8 @@ public class NetMusicKuGou {
             return;
         }
 
-        // ⚠️ 这里绝对不能同步 forceRefreshOne！RightClickBlock 在服务端主线程，同步 HTTP 2-4 秒会卡爆炸
-        // → 玩家体感"插CD卡一下"、方块音响 use() 流程被判定超时、CD 没入槽、必须右键好几次才成功。
+        // ⚠️ 这里绝对不能同步 forceRefreshOne！RightClickBlock 在服务端主线程，同步 HTTP 需 2-4 秒，会阻塞主线程
+        // → 方块音响 use() 流程被判定超时、CD 无法入槽。
         // 改成：提交异步预取 + 存 ConcurrentHashMap；紧接着的 setPlayToClient HEAD 里 tryTake(最多等200ms)，
         // 预取没在 200ms 内完成就先用旧 URL 起播，后台完事后通过 callback 延迟 1 tick 重新 setPlayToClient 切新 URL。
         final BlockPos pos = event.getPos();

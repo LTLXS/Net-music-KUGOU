@@ -48,16 +48,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 酷狗音乐源对 {@code netMusicListNeoForge} 的兼容层（纯反射 + 动态代理，编译期零依赖）。
- * <p>
- * netMusicList 暴露两个扩展点：
- * <ul>
- *   <li>{@code IExtraMusicSource} —— 源注册、搜索、元数据、歌词、封面、剪贴板识别</li>
- *   <li>{@code IMusicParser} —— 把 {@code netmusiclib://} URI 实时解析成酷狗直链</li>
- * </ul>
- * 运行时通过 {@link ModList} 探测 {@code net_music_list} 是否加载，加载时注册酷狗源，
- * 否则本类完全不介入，needkugou 走原有逻辑。
- */
+ 酷狗音乐源对 netMusicListNeoForge 的兼容层（纯反射 + 动态代理，编译期零依赖）。
+ netMusicList 暴露两个扩展点：
+ - IExtraMusicSource —— 源注册、搜索、元数据、歌词、封面、剪贴板识别
+ - IMusicParser —— 把 netmusiclib:// URI 实时解析成酷狗直链
+ 运行时通过 ModList 探测 net_music_list 是否加载，加载时注册酷狗源，
+ 否则本类完全不介入，needkugou 走原有逻辑。
+*/
 public final class NetMusicListCompat {
     public static final String MOD_ID = "net_music_list";
     private static final String TYPE = "kugou";
@@ -67,28 +64,19 @@ public final class NetMusicListCompat {
     private static final String C_EXTRA_MGR = "com.gly091020.netMusicListNeoforge.api.musicSource.ExtraMusicSourceManager";
     private static final String C_PARSER_MGR = "com.gly091020.netMusicListNeoforge.api.musicParser.MusicParserManager";
 
-    // 搜索结果元数据缓存：hash -> Song（含 name/singer/albumId/duration）
     private static final Map<String, KuGouApiClient.Song> SEARCH_CACHE = new ConcurrentHashMap<>();
     // 歌词缓存：hash -> LyricRecord（搜索/刻录阶段预填，避免播放时阻塞）
     private static final Map<String, LyricRecord> LYRIC_CACHE = new ConcurrentHashMap<>();
-    // 原始 LRC 文本缓存：hash -> [lrc, lrcTrans]（刻录时需传给 BurnDataCache 写入 CD NBT，
-    // 方块 CD 歌词由 SetPlayMixin 从 CD NBT 读出后写入 KuGouDisplayCompat，不走 parseLyric）
     private static final Map<String, String[]> RAW_LRC_CACHE = new ConcurrentHashMap<>();
     // 封面缓存：hash -> 原始 PNG 字节（搜索阶段异步预取，best-effort）。
     // 注意：必须缓存【字节】而非 NativeImage 实例——netMusicList 会把 parseIcon 返回的
-    // NativeImage 交给 DynamicTexture（注册后由纹理管理器释放）或显式 close()，
     // 若复用同一个实例，第二次调用会拿到已释放的野对象导致封面空白（“放一次后不再加载”）。
-    // 每次 parseIcon 都从字节解码出独立的新 NativeImage，交给对方释放互不影响。
     private static final Map<String, byte[]> ICON_CACHE_BYTES = new ConcurrentHashMap<>();
 
-    // 直链缓存：hash -> (url, expireMs)。netMusicList 每次重放都走 parse() -> KuGouApiClient.getSongUrl
-    // （实测 165~1255ms 网络延迟），不缓存则「每次重放都卡一下」。这里命中即秒开（0ms 延迟），
-    // 仅在首播/过期时才走网络。TTL 不宜过长：酷狗直链会过期，过长会在循环第 2 圈拿到失效链接。
-    private static final long URL_TTL_MS = 5L * 60 * 1000; // 5 分钟
+    private static final long URL_TTL_MS = 5L * 60 * 1000;
     private record UrlCache(String url, long expireMs) {}
     private static final Map<String, UrlCache> URL_CACHE = new ConcurrentHashMap<>();
 
-    // 封面磁盘持久化：按 hash 落盘到 config/NETMUSICCANNEEDKUGOU/icons/<hash>，
     // 解决「退出重进游戏后之前加载过的封面也加载不出来」——内存缓存重启即丢，磁盘缓存可跨会话复用。
     private static final Path ICON_DIR = FMLPaths.CONFIGDIR.get()
             .resolve("NETMUSICCANNEEDKUGOU").resolve("icons");
@@ -104,15 +92,27 @@ public final class NetMusicListCompat {
     private static final Pattern KUGOU_HASH = Pattern.compile("(?i)[?#&]hash=([0-9a-zA-Z]+)");
 
     /**
-     * 大栈线程池：stb_image（NativeImage.read 底层）在栈上 alloca 解码缓冲，
-     * netMusicList 的 CD-Preview-Icon 等线程栈很小，会抛 "Out of stack space"。
-     * 这里把解码放到 1MB 栈的线程上执行，规避该问题。
-     */
+ 大栈线程池：stb_image（NativeImage.read 底层）在栈上 alloca 解码缓冲，
+ netMusicList 的 CD-Preview-Icon 等线程栈很小，会抛 "Out of stack space"。
+ 这里把解码放到 1MB 栈的线程上执行，规避该问题。
+*/
     private static final ExecutorService ICON_DECODE_EXEC = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(null, r, "kugou-icon-decode", 1024L * 1024);
         t.setDaemon(true);
         return t;
     });
+
+    /**
+ 封面并行预热线程池：netMusicList 的封面抓取是单线程串行的，若 parseIcon 在其中阻塞等待下载，
+ 多张 CD 的封面会变成 N×慢。这里把“按 hash 反查元数据 + 下载封面字节”放到独立线程池并行执行，
+ parseIcon 仅负责命中缓存或入队，从而让多张 CD 的封面得以并行下载。
+*/
+    private static final ExecutorService COVER_PREFETCH_EXEC = Executors.newFixedThreadPool(8, r -> {
+        Thread t = new Thread(null, r, "kugou-cover-prefetch", 256L * 1024);
+        t.setDaemon(true);
+        return t;
+    });
+    private static final Set<String> PREFETCHING = ConcurrentHashMap.newKeySet();
 
     private static boolean registered = false;
 
@@ -148,7 +148,6 @@ public final class NetMusicListCompat {
         }
     }
 
-    // ====================== IExtraMusicSource 代理 ======================
     private static final class SourceHandler implements InvocationHandler {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) {
@@ -177,7 +176,6 @@ public final class NetMusicListCompat {
         }
     }
 
-    // ====================== IMusicParser 代理 ======================
     private static final class ParserHandler implements InvocationHandler {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) {
@@ -220,16 +218,13 @@ public final class NetMusicListCompat {
         return 0;
     }
 
-    // ====================== 源逻辑实现 ======================
     /**
-     * 刻录界面输入框可能因 setMaxLength 把 32 位 hash 截断成更短的前缀。
-     * 若传入 hash 偏短，尝试用前缀从搜索缓存里找回完整的 32 位 hash。
-     */
+ 刻录界面输入框可能因 setMaxLength 把 32 位 hash 截断成更短的前缀。
+ 若传入 hash 偏短，尝试用前缀从搜索缓存里找回完整的 32 位 hash。
+*/
     private static String resolveFullHash(String hash) {
         if (hash == null) return null;
         if (hash.length() >= 30) return hash;
-        // 可能传入的是 netmusiclib URI 或真实酷狗直链（播放后 songUrl 被改写时），
-        // 尝试从中反解出完整 hash
         if (hash.contains("kugou") || hash.startsWith("http") || hash.contains("hash=") || hash.contains("id=")) {
             Matcher m = KUGOU_HASH.matcher(hash);
             if (m.find() && m.group(1).length() >= 30) return m.group(1);
@@ -260,11 +255,8 @@ public final class NetMusicListCompat {
             }
         }
         // ★ 关键兜底：绝不能让 songTime=0。
-        // play/getdata 接口已失效——对每个 hash 都返回"结构性成功但字段全空"的响应
         // （name=hash、duration=0、albumId/image 全空）。若直接用它构造 SongInfo，
-        // 音乐机会执行 setCurrentTime(0*20+64)=64，把歌曲当成 3 秒长，
         // 于是每 3 秒自动重新触发播放 → 翻牌板歌词永远停在开头、重放也回不正。
-        // 歌词搜索接口仍然可用（返回真实 durationMs），用它反查补全时长。
         if (song == null || song.duration <= 0) {
             KuGouApiClient.Song recovered = recoverSongMetaByLyricSearch(hash);
             if (recovered != null && recovered.duration > 0) {
@@ -282,8 +274,6 @@ public final class NetMusicListCompat {
             singer = song.singer != null ? song.singer : "";
             albumId = song.albumId != null ? song.albumId : "";
         }
-        // 让 needkugou 服务端 mixin 把 fileHash/albumId/lrc 写进 CD NBT。
-        // 方块 CD 歌词由 SetPlayMixin 从 CD NBT 读出后写入 KuGouDisplayCompat，
         // 不走 parseLyric，所以必须把原始 LRC 文本写进 CD NBT。
         String[] rawLrc = RAW_LRC_CACHE.get(hash);
         if (rawLrc == null) {
@@ -334,10 +324,10 @@ public final class NetMusicListCompat {
             KuGouLogger.warn("[NetMusicListCompat] parseMusic cover fetch failed: {}", t.getMessage());
         }
 
-        // 预热直链缓存：刻录/搜索阶段异步解析一次，播放时命中缓存秒开（消除首次播放的网络延迟）。
         // 与下面同步流程解耦：仅 fire-and-forget，失败不影响本次刻录结果。
         final String warmHash = hash;
         final String warmAlbum = albumId;
+        final long warmDuration = duration;
         CompletableFuture.runAsync(() -> {
             try {
                 String resolved = KuGouApiClient.getSongUrl(warmHash, warmAlbum)
@@ -348,6 +338,9 @@ public final class NetMusicListCompat {
                 }
             } catch (Throwable ignored) {
             }
+            // 刻录阶段后台触发歌曲 mp3 预缓存：播放时直接读本地文件，无需联网流式拉取，
+            // 对慢网络用户是「秒播」的关键。仅当本地缓存文件缺失才下载，且尊重 netMusicList 的 enableCache 开关。
+            triggerNetMusicListSongCache(warmHash, warmDuration);
         });
 
         String uri = "netmusiclib://source/" + TYPE + "?id="
@@ -359,6 +352,37 @@ public final class NetMusicListCompat {
         info.artists = Lists.newArrayList(singer);
         info.readOnly = readOnly;
         return info;
+    }
+
+    /**
+ 触发 netMusicList 把该酷狗歌曲的 mp3 预下载并落盘缓存（缓存键为 kugou:，
+ 与播放时 PlayMusicHandleMixin 的查找键一致）。
+ 这样刻录后播放直接读本地文件、无需联网流式拉取——对慢网络用户是「秒播」的关键优化。
+ 仅当本地缓存文件确实缺失时才发起下载（幂等，重复刻录不会重复下），且完全尊重 netMusicList 的
+ enableCache 配置（其内部会直接 return）。
+ 通过反射调用 netMusicList 的 CacheManager，保持编译期零依赖。
+*/
+    private static void triggerNetMusicListSongCache(String hash, long duration) {
+        if (hash == null || hash.isEmpty() || duration <= 0) return;
+        try {
+            Class<?> msCls = Class.forName("com.gly091020.netMusicListNeoforge.api.musicSource.MusicSource");
+            Class<?> cmCls = Class.forName("com.gly091020.netMusicListNeoforge.util.CacheManager");
+            // 构造 MusicSource("kugou", hash, duration)
+            Object source = msCls.getConstructor(String.class, String.class, long.class)
+                    .newInstance(TYPE, hash, duration);
+            // 本地缓存文件已存在则跳过（getSongCache 在文件缺失时返回 null）
+            Object existing = cmCls.getMethod("getSongCache", msCls).invoke(null, source);
+            if (existing != null) {
+                KuGouLogger.info("[NetMusicListCompat] song cache file exists, skip hash={}", hash);
+                return;
+            }
+            cmCls.getMethod("startSongDownload", msCls, String.class)
+                    .invoke(null, source, java.util.UUID.randomUUID().toString());
+            KuGouLogger.info("[NetMusicListCompat] triggered netMusicList song cache download hash={}", hash);
+        } catch (Throwable t) {
+            KuGouLogger.warn("[NetMusicListCompat] triggerNetMusicListSongCache failed hash={}: {}",
+                    hash, t.getMessage());
+        }
     }
 
     private static List<ItemMusicCD.SongInfo> search(String keyword) {
@@ -400,7 +424,6 @@ public final class NetMusicListCompat {
         }
         KuGouLogger.info("[NetMusicListCompat] parseLyric cache MISS, fetching for hash={}", hash);
         try {
-            // 缓存未命中：先尝试用 hash 反查元数据（玩家直接粘贴 hash / 搜索缓存已过期时也能量到歌词）
             KuGouApiClient.Song song = SEARCH_CACHE.get(hash);
             if (song == null) {
                 song = fetchSongMetaByHash(hash);
@@ -440,12 +463,12 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 解码 PNG/JPG 字节为 NativeImage。
-     * 不用 NativeImage.read（底层 stb_image 在调用线程栈上 alloca 解码缓冲），
-     * netMusicList 的 CD-Preview-Icon 等线程栈很小会抛 "Out of stack space"，
-     * 且 stb 对部分封面所需栈>1MB，靠加大栈不可靠。这里改用 JDK ImageIO（堆内存解码），
-     * 再逐像素写入 NativeImage，彻底与线程栈大小无关。
-     */
+ 解码 PNG/JPG 字节为 NativeImage。
+ 不用 NativeImage.read（底层 stb_image 在调用线程栈上 alloca 解码缓冲），
+ netMusicList 的 CD-Preview-Icon 等线程栈很小会抛 "Out of stack space"，
+ 且 stb 对部分封面所需栈>1MB，靠加大栈不可靠。这里改用 JDK ImageIO（堆内存解码），
+ 再逐像素写入 NativeImage，彻底与线程栈大小无关。
+*/
     private static NativeImage decodeNativeImage(byte[] bytes) throws Exception {
         Future<NativeImage> f = ICON_DECODE_EXEC.submit(() -> {
             BufferedImage src = ImageIO.read(new ByteArrayInputStream(bytes));
@@ -472,44 +495,59 @@ public final class NetMusicListCompat {
     private static NativeImage parseIcon(String hash) {
         if (hash == null || hash.isEmpty()) return null;
         hash = resolveFullHash(hash);
-        KuGouLogger.info("[NetMusicListCompat] parseIcon ENTER resolved='{}' thread={}", hash, Thread.currentThread().getName());
-        // 从字节缓存解码【全新】 NativeImage，每次调用互不影响：
-        // netMusicList 会把返回的 NativeImage 交给 DynamicTexture（注册后释放）或显式 close()，
-        // 若复用同一实例，第二次调用会拿到已释放的野对象导致封面空白（“放一次后不再加载”）。
+        // 优先命中内存/磁盘缓存（刻录阶段已预取或历史已落盘），命中即秒出，完全不走网络。
         byte[] cached = ICON_CACHE_BYTES.get(hash);
-        if (cached == null) cached = loadCoverFromDisk(hash);   // 跨会话磁盘缓存
-        if (cached == null) {
-            // 1) 先短等一下，捕捉并发的搜索/刻录流程把带 albumId+image 的 Song 写入 SEARCH_CACHE
-            KuGouApiClient.Song song = SEARCH_CACHE.get(hash);
-            if (song == null) {
-                long deadline = System.currentTimeMillis() + 1500;
-                while (System.currentTimeMillis() < deadline && (song = SEARCH_CACHE.get(hash)) == null) {
-                    try { Thread.sleep(100); } catch (InterruptedException e) { break; }
+        if (cached == null) cached = loadCoverFromDisk(hash);
+        if (cached != null) {
+            ICON_CACHE_BYTES.putIfAbsent(hash, cached);
+            return decodeAndReturn(hash, cached);
+        }
+        // 缓存未命中：交给并行预热线程池去下载，本次先返回 null。
+        // netMusicList 的封面抓取是单线程串行的，若在这里阻塞等待会让多张 CD 的封面变成 N×慢；
+        // 改为非阻塞入队后，串行循环会把所有可见 CD 的 hash 迅速全部入队，由线程池并行下载，
+        // 待磁盘缓存写好，下一次抓取周期重试即命中出图。
+        enqueueCoverPrefetch(hash);
+        return null;
+    }
+
+    /**
+ 把封面下载任务丢进并行线程池（去重，避免重复入队）。任务内按 hash 反查元数据并下载封面字节写入缓存。
+*/
+    private static void enqueueCoverPrefetch(String hash) {
+        if (!PREFETCHING.add(hash)) return;
+        COVER_PREFETCH_EXEC.submit(() -> {
+            try {
+                KuGouApiClient.Song song = SEARCH_CACHE.get(hash);
+                // 即便 SEARCH_CACHE 命中，只要缺 albumId/image（封面关键字段），也用移动端 getSongInfo 重新反查——
+                // 这些字段才是拼封面 CDN 直链的凭证，旧缓存常为 null 导致"放一次后封面消失/永远拿不到"。
+                if (song == null || song.albumId == null || song.albumId.isEmpty()
+                        || song.image == null || song.image.isEmpty()) {
+                    KuGouApiClient.Song fresh = fetchSongMetaByHash(hash);
+                    if (fresh != null && (!fresh.albumId.isEmpty()
+                            || (fresh.image != null && !fresh.image.isEmpty()))) {
+                        song = fresh;
+                    }
                 }
+                // 仍为 null / 仍缺封面字段：再退一步用 hash 关键词搜酷狗（极小概率命中）
+                if (song == null || song.albumId == null || song.albumId.isEmpty()
+                        || song.image == null || song.image.isEmpty()) {
+                    song = searchCoverSongByHash(hash);
+                }
+                if (song != null) {
+                    byte[] cover = loadCoverBytes(song);
+                    if (cover != null) {
+                        cacheCoverBytes(hash, cover);
+                        KuGouLogger.info("[NetMusicListCompat] prefetch cached hash={}", hash);
+                    } else {
+                        KuGouLogger.warn("[NetMusicListCompat] prefetch cover null hash={}", hash);
+                    }
+                }
+            } catch (Throwable t) {
+                KuGouLogger.warn("[NetMusicListCompat] prefetch failed hash={}: {}", hash, t.getMessage());
+            } finally {
+                PREFETCHING.remove(hash);
             }
-            // 2) 单 hash 兜底：用 getdata 接口按 hash 反查封面（data.img），可靠且不依赖关键词搜索
-            if (song == null) song = fetchSongMetaByHash(hash);
-            // 3) 再用 hash 关键词搜酷狗兜底。
-            //    注意必须按"封面信息是否真的可用"判断，不能只看 song == null：
-            //    getdata 已失效，会返回非 null 但 albumId/image 全空的空壳 Song，
-            //    若这里写成 (song == null) 就永远走不到搜索兜底，封面必然 "no cover source worked"。
-            if (song == null || song.albumId == null || song.albumId.isEmpty()
-                    || song.image == null || song.image.isEmpty()) {
-                song = searchCoverSongByHash(hash);
-            }
-            if (song != null) {
-                cached = loadCoverBytes(song);
-                if (cached != null) cacheCoverBytes(hash, cached);
-            }
-            KuGouLogger.info("[NetMusicListCompat] parseIcon fallback done resolved='{}' gotBytes={}", hash, cached != null);
-        } else {
-            ICON_CACHE_BYTES.putIfAbsent(hash, cached); // 磁盘命中回填内存
-        }
-        if (cached == null) {
-            KuGouLogger.warn("[NetMusicListCompat] parseIcon RETURN null resolved='{}'", hash);
-            return null;
-        }
-        return decodeAndReturn(hash, cached);
+        });
     }
 
     private static NativeImage decodeAndReturn(String hash, byte[] cached) {
@@ -556,7 +594,6 @@ public final class NetMusicListCompat {
             if (hash == null || hash.isEmpty()) return null;
             hash = resolveFullHash(hash);
 
-            // ★ 直链缓存命中：重放/循环时秒开，消除「每次重放都卡一下」的延迟。
             UrlCache cached = URL_CACHE.get(hash);
             if (cached != null && cached.expireMs() > System.currentTimeMillis()) {
                 KuGouLogger.info("[NetMusicListCompat] parse URL cache HIT hash={} (0ms)", hash);
@@ -565,7 +602,6 @@ public final class NetMusicListCompat {
 
             KuGouApiClient.Song song = SEARCH_CACHE.get(hash);
             if (song == null) {
-                // 播放时缓存未命中：尝试从酷狗 getdata 接口补全元数据，提高 getSongUrl 成功率
                 song = fetchSongMetaByHash(hash);
                 if (song != null) {
                     SEARCH_CACHE.put(hash, song);
@@ -601,7 +637,6 @@ public final class NetMusicListCompat {
                 .thenAccept(content -> {
                     if (content != null && content.lyricContent != null && !content.lyricContent.isEmpty()) {
                         // 保留原始 LRC 文本，供 parseMusic 写入 BurnDataCache -> CD NBT，
-                        // 方块 CD 歌词由 SetPlayMixin 从 CD NBT 读出后写入 KuGouDisplayCompat
                         RAW_LRC_CACHE.put(hash, new String[]{content.lyricContent, content.languageJson});
                         LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
                                 content.lyricContent, content.languageJson, songName);
@@ -615,9 +650,9 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 同步拉取原始 LRC 文本（刻录时兜底，阻塞可接受）。
-     * 返回 [lrc, lrcTrans]，失败返回 null。
-     */
+ 同步拉取原始 LRC 文本（刻录时兜底，阻塞可接受）。
+ 返回 [lrc, lrcTrans]，失败返回 null。
+*/
     private static String[] fetchRawLyricSync(String hash, String songName, String singer, int durationSec) {
         try {
             String keyword = (singer != null ? singer : "") + " - " + (songName != null ? songName : "");
@@ -644,19 +679,13 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 用「歌词搜索」接口反查歌曲元数据（歌名 / 歌手 / 时长）。
-     * <p>
-     * 为什么需要它：酷狗 {@code play/getdata}（{@link #fetchSongMetaByHash}）已普遍失效，
-     * 对每个 hash 都返回 HTTP 200 且带 data 字段、但内容全空的响应，于是
-     * {@code name} 退化为 hash、{@code duration=0}、{@code albumId}/{@code image} 为空。
-     * 只要上游拿到 {@code songTime=0}，音乐机就会 {@code setCurrentTime(0*20+64)=64}
-     * ——歌曲被当成 3 秒长，{@code currentTime} 掉到 16 以下立刻重新触发
-     * {@code setPlayToClient}，表现就是"翻牌板歌词永远停在开头""重放三次回不正"。
-     * <p>
-     * 歌词搜索接口实测仍然可用并会返回真实 {@code durationMs}，因此用它兜底补全时长。
-     *
-     * @return 带正时长的 Song；反查失败返回 null
-     */
+ 用「歌词搜索」接口反查歌曲元数据（歌名 / 歌手 / 时长）。
+ play/getdata（fetchSongMetaByHash）已普遍返回内容为空的响应，导致
+ name 退化为 hash、duration=0；songTime=0 时歌曲被当作 3 秒长，
+ currentTime 掉到 16 以下会立刻重新触发 setPlayToClient（歌词停在开头、重放不归零）。
+ 歌词搜索接口仍返回真实 durationMs，用它兜底补全时长。
+
+ @return 带正时长的 Song；反查失败返回 null*/
     private static KuGouApiClient.Song recoverSongMetaByLyricSearch(String hash) {
         try {
             var cands = KuGouApiClient.searchLyricCandidates(hash, "", 0, "", "")
@@ -690,11 +719,18 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 用 hash 直接搜酷狗，拿到带 albumId + image 的 Song 用于封面。
-     * 这是「搜索缓存未命中」时（旧碟 / 刻录前预览）获取封面的兜底路径：
-     * getdata 不含封面信息，只有搜索结果里才有 albumId + image。
-     * 优先精确匹配 FileHash，避免拿到错误封面。
-     */
+ 用 hash 反查歌名后再搜酷狗，拿到带 albumId + image 的 Song 用于封面。
+ 旧逻辑直接用 hash 当搜索关键词，但酷狗搜索按 hash 文本查必然 0 结果
+ （日志表现为 total:0, lists:[]），导致"只有 hash、没有 albumId/image"的 CD
+ 一旦缓存失效就永远拿不到封面。
+ 新逻辑：先按 hash 找回歌名/歌手（歌词搜索接口优先，getdata 兜底），再用「歌名」
+ 去搜，从结果取首个带 albumId+image 的 Song；仍先用 hash 当关键词试一次，
+ 命中精确匹配则优先。
+*/
+    /**
+ 用 hash 直接搜酷狗，作为最后的兜底（极小概率命中，因 hash 不是可搜关键词）。
+ 主封面来源是 fetchSongMetaByHash 的移动端接口（返回 album_id + album_img）。
+*/
     private static KuGouApiClient.Song searchCoverSongByHash(String hash) {
         try {
             List<KuGouApiClient.Song> songs = KuGouApiClient.search(hash, 1, 10)
@@ -704,15 +740,9 @@ public final class NetMusicListCompat {
                 return null;
             }
             for (KuGouApiClient.Song s : songs) {
-                if (s.hash != null && s.hash.equalsIgnoreCase(hash)) {
+                if (s.hash != null && s.hash.equalsIgnoreCase(hash)
+                        && s.albumId != null && !s.albumId.isEmpty() && s.image != null && !s.image.isEmpty()) {
                     KuGouLogger.info("[NetMusicListCompat] searchCoverSongByHash exact match hash={}", hash);
-                    return s;
-                }
-            }
-            // 无精确匹配：退而取第一个带 albumId+image 的结果（封面通常是专辑图，错误概率低）
-            for (KuGouApiClient.Song s : songs) {
-                if (s.albumId != null && !s.albumId.isEmpty() && s.image != null && !s.image.isEmpty()) {
-                    KuGouLogger.warn("[NetMusicListCompat] searchCoverSongByHash no exact match, use first usable hash={}", hash);
                     return s;
                 }
             }
@@ -725,11 +755,10 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 按候选源逐个尝试下载封面，返回第一个成功解析出的图片。
-     * <p>
-     * 老接口 {@code www.kugou.com/yy/index.php?r=play/getdata} 现已普遍返回空 img，
-     * 所以优先用搜索响应里的 Image 字段 / albumId 直接拼 CDN 地址。
-     */
+ 按候选源逐个尝试下载封面，返回第一个成功解析出的图片。
+ 老接口 www.kugou.com/yy/index.php?r=play/getdata 现已普遍返回空 img，
+ 所以优先用搜索响应里的 Image 字段 / albumId 直接拼 CDN 地址。
+*/
     private static byte[] loadCoverBytes(KuGouApiClient.Song s) {
         if (s == null) return null;
         KuGouLogger.info("[NetMusicListCompat] cover meta: hash={}, albumId='{}', image='{}'",
@@ -739,7 +768,7 @@ public final class NetMusicListCompat {
         for (String url : coverUrlCandidates(s)) {
             long leftMs = deadline - System.currentTimeMillis();
             if (leftMs <= 0) break;
-            int timeoutSec = (int) Math.min(8, Math.max(1, leftMs / 1000));
+            int timeoutSec = (int) Math.min(4, Math.max(1, leftMs / 1000));
             byte[] bytes = downloadImage(url, timeoutSec);
             if (bytes != null) {
                 KuGouLogger.info("[NetMusicListCompat] cover ok for hash={} via {}", s.hash, url);
@@ -750,23 +779,20 @@ public final class NetMusicListCompat {
         return null;
     }
 
-    /**
-     * 生成封面 URL 候选列表（按可靠性排序）。
-     */
     private static List<String> coverUrlCandidates(KuGouApiClient.Song s) {
         List<String> urls = new ArrayList<>();
         String albumId = s.albumId != null ? s.albumId : "";
         String image = s.image;
 
-        // 1) 搜索响应自带的封面 URL（trans_param.union_cover / Image）。
-        //    对齐 EchoMusic 的 formatPic：值本身已是完整 URL，只替换 {size}、补协议，不拼任何 CDN 前缀。
+        // 值本身已是完整 URL，只替换 {size}、补协议，不拼任何 CDN 前缀。
         if (image != null && !image.isEmpty()) {
             String v = formatPic(image);
             if (v.startsWith("https://")) urls.add(v);
         }
 
         // 2) 用 albumId 兜底直拼酷狗 CDN（实测 imge / imgessl 均可用）
-        if (!albumId.isEmpty()) {
+        // albumId 为 0 / null 时 CDN 返回默认灰图，跳过以免封面错配
+        if (!albumId.isEmpty() && !"0".equals(albumId) && !"null".equalsIgnoreCase(albumId)) {
             urls.add("https://imge.kugou.com/stdmusic/400/" + albumId + ".jpg");
             urls.add("https://imgessl.kugou.com/stdmusic/400/" + albumId + ".jpg");
         }
@@ -774,8 +800,8 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 对齐 EchoMusic 的 {@code formatPic}：替换 {@code {size}} 占位符、补全协议，不拼 CDN 前缀。
-     */
+ 替换 {size} 占位符、补全协议，不拼 CDN 前缀。
+*/
     private static String formatPic(String value) {
         if (value == null || value.isEmpty()) return "";
         String pic = value.replace("{size}", "400");
@@ -784,6 +810,8 @@ public final class NetMusicListCompat {
         } else if (pic.startsWith("http://")) {
             pic = "https://" + pic.substring(7);
         }
+        // 旧图床 c1.kgimg.com 常返回占位/错图，统一归一到有效 CDN
+        pic = pic.replace("c1.kgimg.com", "imge.kugou.com");
         return pic;
     }
 
@@ -831,26 +859,59 @@ public final class NetMusicListCompat {
     }
 
     /**
-     * 按魔数判断字节流是否为真实图片，过滤 CDN 返回的 HTML 错误页/占位文本。
-     */
+ 按魔数判断字节流是否为真实图片，过滤 CDN 返回的 HTML 错误页/占位文本。
+*/
     private static boolean looksLikeImage(byte[] b) {
         if (b == null || b.length < 12) return false;
         int b0 = b[0] & 0xFF, b1 = b[1] & 0xFF, b2 = b[2] & 0xFF, b3 = b[3] & 0xFF;
-        if (b0 == 0xFF && b1 == 0xD8) return true;                                        // JPEG
-        if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47) return true;            // PNG
-        if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46) return true;                          // GIF
-        if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true;            // RIFF/WebP
+        if (b0 == 0xFF && b1 == 0xD8) return true;
+        if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47) return true;
+        if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46) return true;
+        if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) return true;
         return false;
     }
 
     /**
-     * 通过酷狗网页 play/getdata 接口按 hash 反查歌曲元数据。
-     * <p>
-     * 用于玩家直接输入 hash、刻录时搜索缓存未命中、或播放时缓存丢失的场景，
-     * 避免构造出 duration=0 的 SongInfo 导致 netMusicList 无法播放。
-     */
+ 通过酷狗网页 play/getdata 接口按 hash 反查歌曲元数据。
+ 用于玩家直接输入 hash、刻录时搜索缓存未命中、或播放时缓存丢失的场景，
+ 避免构造出 duration=0 的 SongInfo 导致 netMusicList 无法播放。
+*/
+    /**
+ 通过酷狗接口按 hash 反查歌曲元数据（歌名/歌手/时长/albumId/封面）。
+ 优先用移动端 getSongInfo.php?cmd=playInfo&hash= 接口——它对部分 hash 返回空
+ data 的网页 getdata（status:0, err_code:20010）更可靠，且直接给出 album_id + album_img
+ （拼封面 CDN 直链的关键字段）。网页 getdata 作为互补（个别情况下 album_id/img 更全）。
+*/
     private static KuGouApiClient.Song fetchSongMetaByHash(String hash) {
         if (hash == null || hash.isEmpty()) return null;
+        // 移动端 getSongInfo 可靠且直接给 album_id + album_img，优先采用。
+        // 老 web(play/getdata) 接口会卡读超时且已普遍不返回封面，故仅作互补兜底，
+        // 绝不在常规路径里串行先发——这正是之前「刻录/取封面要等十几秒」的根因。
+        KuGouApiClient.Song mob = fetchSongMetaByHashMobile(hash);
+        if (mob != null && metaUsable(mob)) return mob;
+        KuGouApiClient.Song web = fetchSongMetaByHashWeb(hash);
+        if (web != null && metaUsable(web)) return web;
+        // 字段互补：一端有歌名一端有 albumId/image
+        if (web != null && mob != null) {
+            String name = firstNonEmpty(mob.name, web.name);
+            String singer = firstNonEmpty(mob.singer, web.singer);
+            String album = firstNonEmpty(mob.album, web.album);
+            String albumId = firstNonEmpty(mob.albumId, web.albumId);
+            String image = firstNonEmpty(mob.image, web.image);
+            int dur = mob.duration > 0 ? mob.duration : web.duration;
+            return new KuGouApiClient.Song(hash, name, singer, album, hash, albumId, dur, image);
+        }
+        return mob != null ? mob : web;
+    }
+
+    /** 仅当拿到了真实歌名（非 hash 本身）且至少有 albumId 或 image 时，才算"可用封面元数据"。 */
+    private static boolean metaUsable(KuGouApiClient.Song s) {
+        return s != null && !s.name.equalsIgnoreCase(s.hash)
+                && ((s.albumId != null && !s.albumId.isEmpty())
+                    || (s.image != null && !s.image.isEmpty()));
+    }
+
+    private static KuGouApiClient.Song fetchSongMetaByHashWeb(String hash) {
         try {
             Map<String, String> headers = kugouHeaders();
             Map<String, Object> params = new HashMap<>();
@@ -858,12 +919,12 @@ public final class NetMusicListCompat {
             params.put("hash", hash);
             HttpUtils.HttpResponse resp = HttpUtils.get("https://www.kugou.com/yy/index.php", headers, params);
             if (!resp.isOk() || resp.body == null || resp.body.isEmpty()) {
-                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHash HTTP {}: {}", resp.statusCode, resp.body);
+                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashWeb HTTP {}: {}", resp.statusCode, resp.body);
                 return null;
             }
             JsonObject root = resp.asJson().getAsJsonObject();
             if (!root.has("data") || !root.get("data").isJsonObject()) {
-                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHash no data field");
+                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashWeb no data field");
                 return null;
             }
             JsonObject data = root.getAsJsonObject("data");
@@ -899,11 +960,60 @@ public final class NetMusicListCompat {
             if (singer == null) singer = "";
             if (album == null) album = "";
             if (albumId == null) albumId = "";
-            KuGouLogger.info("[NetMusicListCompat] fetched meta for hash={}, name={}, duration={}s",
+            KuGouLogger.info("[NetMusicListCompat] fetched meta(web) for hash={}, name={}, duration={}s",
                     returnedHash, name, durationSec);
             return new KuGouApiClient.Song(returnedHash, name, singer, album, returnedHash, albumId, durationSec, coverUrl);
         } catch (Throwable t) {
-            KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHash failed: {}", t.getMessage());
+            KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashWeb failed: {}", t.getMessage());
+        }
+        return null;
+    }
+
+    /**
+ 移动端 getSongInfo 接口：仅需 hash，返回 album_id + album_img（album_img / union_cover），
+ 对网页 getdata 返空（status:0, err_code:20010）的 hash 仍能解析出封面所需元数据。
+*/
+    private static KuGouApiClient.Song fetchSongMetaByHashMobile(String hash) {
+        try {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
+            Map<String, Object> params = new HashMap<>();
+            HttpUtils.HttpResponse resp = HttpUtils.get(
+                    "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=" + hash,
+                    headers, params);
+            if (!resp.isOk() || resp.body == null || resp.body.isEmpty()) {
+                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashMobile HTTP {}: {}", resp.statusCode, resp.body);
+                return null;
+            }
+            JsonObject data = resp.asJson().getAsJsonObject();
+            // 以 songName 是否存在作为有效性判据；移动端在部分有效响应里 status 为 0，不能据此判失败
+            if (data == null || !data.has("songName") || data.get("songName").isJsonNull()) {
+                KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashMobile no songName for {}", hash);
+                return null;
+            }
+            String name = getJsonStr(data, "songName");
+            String singer = firstNonEmpty(
+                    getJsonStr(data, "singerName"),
+                    getJsonStr(data, "author_name"),
+                    getJsonStr(data, "choricSinger"));
+            String album = getJsonStr(data, "album_name");
+            String albumId = firstNonEmpty(
+                    getJsonStr(data, "albumid"),
+                    getJsonStr(data, "album_audio_id"),
+                    getJsonStr(data, "req_albumid"));
+            int durationSec = parseDurationSeconds(data);
+            String coverUrl = firstNonEmpty(
+                    getJsonStr(data, "album_img"),
+                    getJsonStr(data, "union_cover"),
+                    getJsonStr(data, "imgUrl"));
+            if (name == null || name.isEmpty()) name = hash;
+            if (singer == null) singer = "";
+            if (albumId == null) albumId = "";
+            KuGouLogger.info("[NetMusicListCompat] fetched meta(mobile) for hash={}, name={}, albumId='{}'",
+                    hash, name, albumId);
+            return new KuGouApiClient.Song(hash, name, singer, album, hash, albumId, durationSec, coverUrl);
+        } catch (Throwable t) {
+            KuGouLogger.warn("[NetMusicListCompat] fetchSongMetaByHashMobile failed: {}", t.getMessage());
         }
         return null;
     }
@@ -914,6 +1024,7 @@ public final class NetMusicListCompat {
             if (e == null || e.isJsonNull()) e = data.has("timelength") ? data.get("timelength") : null;
             if (e == null || e.isJsonNull()) e = data.has("time_len") ? data.get("time_len") : null;
             if (e == null || e.isJsonNull()) e = data.has("timelengthms") ? data.get("timelengthms") : null;
+            if (e == null || e.isJsonNull()) e = data.has("timeLength") ? data.get("timeLength") : null;
             if (e == null || e.isJsonNull()) return 0;
             if (!e.isJsonPrimitive()) return 0;
             String s = e.getAsString();

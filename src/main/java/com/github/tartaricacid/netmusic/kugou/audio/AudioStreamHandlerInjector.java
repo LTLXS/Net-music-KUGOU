@@ -10,14 +10,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 把酷狗专属的 {@link KuGouAudioStreamHandler} 反射注入父模组
- * {@code AudioStreamHandlerManager.HANDLERS}（优先级最高，避免 DirectHttpHandler 用网易云 UA 拉酷狗 403）。
- * <p>
- * 为什么不用官方 {@code registerHandler}？因为父模组 {@code AudioStreamHandlerManager.init()} 内部会在注册完
- * 自带的 5 个 handler 后立刻 {@code HANDLERS = ImmutableList.copyOf(HANDLERS);}，之后再调用官方
- * {@code registerHandler} 会被内部 {@code if (HANDLERS instanceof ImmutableCollection) return error;} 直接拒绝。
- * 我们完全不知道 NetMusic 父模组的 init 何时触发，所以在第一次 ClientLoggingIn 时反射改写 HANDLERS 字段最稳。
- */
+ 把酷狗专属的 KuGouAudioStreamHandler 反射注入父模组
+ AudioStreamHandlerManager.HANDLERS（优先级最高，避免 DirectHttpHandler 用网易云 UA 拉酷狗 403）。
+ 为什么不用官方 registerHandler？因为父模组 AudioStreamHandlerManager.init() 内部会在注册完
+ 自带的 5 个 handler 后立刻 HANDLERS = ImmutableList.copyOf(HANDLERS);，之后再调用官方
+ registerHandler 会被内部 if (HANDLERS instanceof ImmutableCollection) return error; 直接拒绝。
+ 我们完全不知道 NetMusic 父模组的 init 何时触发，所以在第一次 ClientLoggingIn 时反射改写 HANDLERS 字段最稳。
+*/
 public final class AudioStreamHandlerInjector {
     private static volatile boolean injected = false;
 

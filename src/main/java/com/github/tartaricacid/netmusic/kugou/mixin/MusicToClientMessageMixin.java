@@ -29,16 +29,14 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 父模组 {@code MusicToClientMessage.onHandle} 只为网易云 rawUrl 拉歌词，酷狗的没处理。
- * 本 Mixin 在 {@code onHandle} 入口从 CD 物品 NBT 读 LRC 文本 + 翻译 JSON 并解析，
- * 结果存到 {@link LyricInjectCache} 供 {@link NetMusicSoundMixin} 在构造器尾部取用；
- * 罗马音则存到 {@link BlockRomajiRegistry} 侧通道供 {@code MusicPlayerRendererMixin} 读。
- * <p>
- * 父模组的 {@code MusicPlayerRenderer.renderLyric} 已经支持双行渲染（原文 + 翻译），
- * 我们只需要把翻译数据也填进 {@code LyricRecord.transLyrics} 即可。
- * <p>
- * 罗马音因为 {@code LyricRecord} 字段限制塞不进去，单独走侧通道。
- */
+ 父模组 MusicToClientMessage.onHandle 只为网易云 rawUrl 拉歌词，酷狗的没处理。
+ 本 Mixin 在 onHandle 入口从 CD 物品 NBT 读 LRC 文本 + 翻译 JSON 并解析，
+ 结果存到 LyricInjectCache 供 NetMusicSoundMixin 在构造器尾部取用；
+ 罗马音则存到 BlockRomajiRegistry 侧通道供 MusicPlayerRendererMixin 读。
+ 父模组的 MusicPlayerRenderer.renderLyric 已经支持双行渲染（原文 + 翻译），
+ 我们只需要把翻译数据也填进 LyricRecord.transLyrics 即可。
+ 罗马音因为 LyricRecord 字段限制塞不进去，单独走侧通道。
+*/
 @Mixin(value = MusicToClientMessage.class, remap = false)
 public class MusicToClientMessageMixin {
 
@@ -82,11 +80,14 @@ public class MusicToClientMessageMixin {
             if (!(be instanceof TileEntityMusicPlayer)) return;
             TileEntityMusicPlayer musicPlay = (TileEntityMusicPlayer) be;
 
+            // 当前曲目 hash：优先从消息携带的 netmusiclib://source/kugou?id= 提取
+            // （列表CD 每首歌各自的酷狗 fileHash），否则回退顶层 fileHash。
+            String activeHash = null;
             // === 客户端也注册当前正在播放的歌曲，确保显示牌/渲染侧上下文一致 ===
             try {
                 String url = (String) URL_METHOD.invoke(message);
                 int timeSecond = ((Number) TIME_SECOND_METHOD.invoke(message)).intValue();
-                String activeHash = KuGouDisplayCompat.extractHashFromNetmusiclibUrl(url);
+                activeHash = KuGouDisplayCompat.extractHashFromNetmusiclibUrl(url);
                 if (activeHash == null || activeHash.isEmpty()) {
                     ItemStack cd0 = musicPlay.getPlayerInv().getStackInSlot(0);
                     Optional<CdAddonData> addonOpt = CdNbtHelper.readOriginalInfo(cd0);
@@ -94,8 +95,6 @@ public class MusicToClientMessageMixin {
                 }
                 if (activeHash != null && !activeHash.isEmpty()) {
                     KuGouDisplayCompat.registerActiveSong(pos, activeHash, songName, timeSecond);
-                    // 歌曲开始播放：记录精确总时长（服务器刚写入 currentTime 的值），
-                    // 歌词进度以 currentTime 为基准、从此处开启新会话（切歌/重放自动归零）
                     KuGouDisplayCompat.markPlayStart(pos, timeSecond);
                 }
             } catch (Throwable ignored) {
@@ -119,8 +118,14 @@ public class MusicToClientMessageMixin {
                 KuGouLogger.warn("KuGou lyric: LRC parse returned null for CD at {}", pos);
                 return;
             }
-            LyricRecord record = data.record;
+            // 列表CD：每首歌歌词按 fileHash 存于 KuGouDisplayCompat.LYRIC_BY_HASH
+            // （烧录/搜索阶段由 NetMusicListCompat.putLyricByHash 写入），优先取逐曲歌词；
+            // 顶层 CdAddonData.lrc 只是烧录残留（最后一首），列表CD 直接用会显示成另一首歌的歌词。
+            LyricRecord cacheRecord = (activeHash != null && !activeHash.isEmpty())
+                    ? KuGouDisplayCompat.getLyricByHash(activeHash) : null;
+            LyricRecord record = (cacheRecord != null) ? cacheRecord : data.record;
             LyricInjectCache.set(pos, record);
+            // 罗马音侧通道仍来自 CD 顶层解析（单曲 CD 正确；列表 CD 顶层罗马音本就错位，属已知取舍）
             BlockRomajiRegistry.put(pos, data.romaji);
             int transLines = (record.getTransLyrics() != null) ? record.getTransLyrics().size() : 0;
             int romajiLines = data.romaji.size();
@@ -187,9 +192,9 @@ public class MusicToClientMessageMixin {
     }
 
     /**
-     * 歌词拉取完成后，解析并写入 LyricInjectCache + BlockRomajiRegistry + CD NBT。
-     * 必须在主线程执行（因为写 CD NBT + LyricInjectCache 都是客户端操作）。
-     */
+ 歌词拉取完成后，解析并写入 LyricInjectCache + BlockRomajiRegistry + CD NBT。
+ 必须在主线程执行（因为写 CD NBT + LyricInjectCache 都是客户端操作）。
+*/
     private static void injectLateLyric(ItemStack cd, BlockPos pos, String lrcText, String transJson, String songName) {
         Minecraft.getInstance().execute(() -> {
             try {

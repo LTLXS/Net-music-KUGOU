@@ -9,36 +9,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 酷狗 URL 异步预取缓存。
- * <p>
- * <b>为什么需要这个？</b>
- * 之前我们在两个服务端主线程入口（{@code RightClickBlock -> onRightClickJukebox} 和
- * {@code TileEntityMusicPlayer.setPlayToClient HEAD}）里都同步调用 {@code forceRefreshOne → getSongUrl().get(30s)}，
- * 会把 Minecraft Server Thread 卡死几百毫秒到几秒。实际后果：
- * <ol>
- *   <li>插 CD 时整个游戏"卡一下"，方块音响 use() 流程被 Minecraft 判定超时，CD 没真正入槽 → 必须反复右键好几次才能播</li>
- *   <li>setPlayToClient 阻塞太久 → 所有玩家看到的方块音响播放消息延迟好几秒 → "等很久才响"</li>
- *   <li>同一个 CD 被 forceRefreshOne 连续跑两遍（RightClickBlock 一次 + setPlayToClient 一次），浪费时间</li>
- * </ol>
- * <p>
- * <b>使用流程（两段式并行）：</b>
- * <ol>
- *   <li>{@code onRightClickJukebox} 在服务器主线程 <b>立刻返回</b>，只是把
- *       {@code asyncPrefetch(hash, albumId, cd)} 扔进本类的后台线程池，
- *       结果按 {@code PrefetchKey(pos, playerUUID)} 存进 {@link #PENDING}。</li>
- *   <li>几 ms 后方块音响 use() 正常把 CD 塞进 playerInv slot 0，触发 {@code setPlayToClient HEAD}。
- *       这里先 {@link #tryTake(BlockPos, UUID)} 找刚才预取的 future：
- *       <ul>
- *         <li>预取已完成 → 直接拿新 URL，0 毫秒额外延迟。</li>
- *         <li>预取还在跑 → 最多 {@link #MAX_JOIN_MS}（默认 200ms）等一下，等不到就直接用 CD NBT 里的旧 URL 先起播，
- *             预取在后台 finish 后发现 URL 真的变了会回调：延迟 1 tick 让 TileEntity 重新 setPlayToClient 用新 URL 无缝切歌。</li>
- *       </ul>
- *   </li>
- * </ol>
- * <p>
- * 这样 99% 的 HTTP 耗时都不在服务器主线程上；最坏情况（预取完全没命中）也只会在 setPlayToClient 里挡 ~200ms，
- * 比之前 2~5s 的卡顿体感好很多。
- */
+ 酷狗 URL 异步预取缓存。
+ 在服务端主线程同步 getSongUrl().get(30s) 会阻塞数百毫秒到数秒，
+ 导致 RightClickBlock 超时、播放消息延迟、同一 CD 被重复刷新。
+ 两段式并行：onRightClickJukebox 立刻返回，只提交 asyncPrefetch，
+ 结果按 PrefetchKey(pos, playerUUID) 存入 PENDING；
+ setPlayToClient HEAD 调 tryTake：预取完成直接用新 URL，
+ 未完成最多等 MAX_JOIN_MS（默认 200ms），等不到先用 CD NBT 旧 URL 起播，
+ 预取完成后若 URL 变化则回调延迟 1 tick 重新 setPlayToClient（无缝切歌）。*/
 public final class KuGouPrefetch {
     private KuGouPrefetch() {}
 
@@ -58,10 +36,10 @@ public final class KuGouPrefetch {
     });
 
     /**
-     * Key：我们只做"同一次右键动作 → 紧接着的 setPlayToClient"这一次命中，
-     * 所以 key 只需要 BlockPos（右键的方块位置）就能对上，
-     * 因为同一时刻同一台方块音响不可能有两个人同时插 CD。
-     */
+ Key：我们只做"同一次右键动作 → 紧接着的 setPlayToClient"这一次命中，
+ 所以 key 只需要 BlockPos（右键的方块位置）就能对上，
+ 因为同一时刻同一台方块音响不可能有两个人同时插 CD。
+*/
     public record PrefetchKey(net.minecraft.core.BlockPos pos, java.util.UUID playerId) {}
 
     private static final ConcurrentHashMap<PrefetchKey, Entry> PENDING = new ConcurrentHashMap<>();
@@ -104,9 +82,9 @@ public final class KuGouPrefetch {
     }
 
     /**
-     * 异步预取：后台线程去 forceRefresh 一个 URL，结果缓存进 {@link #PENDING}。
-     * <b>本函数绝对不做任何阻塞 I/O，调用方（RightClickBlock 服务端主线程）可以立即返回。</b>
-     */
+ 异步预取：后台线程去 forceRefresh 一个 URL，结果缓存进 PENDING。
+ 本函数绝对不做任何阻塞 I/O，调用方（RightClickBlock 服务端主线程）可以立即返回。
+*/
     public static void asyncPrefetch(net.minecraft.core.BlockPos pos,
                                      java.util.UUID playerId,
                                      net.minecraft.world.item.ItemStack cd) {
@@ -146,11 +124,11 @@ public final class KuGouPrefetch {
     }
 
     /**
-     * setPlayToClient HEAD 调用：从 {@link #PENDING} 取预取结果，最多等 {@link #MAX_JOIN_MS}，
-     * 并把"刷新完成后延迟 1 tick 重新 setPlayToClient"的回调注册到 future 上。
-     *
-     * @return 可取用的 songUrl（空串 = 预取没完成 / 预取失败，让调用方 fallback 到 CD 原始 URL）
-     */
+ setPlayToClient HEAD 调用：从 PENDING 取预取结果，最多等 MAX_JOIN_MS，
+ 并把"刷新完成后延迟 1 tick 重新 setPlayToClient"的回调注册到 future 上。
+
+ @return 可取用的 songUrl（空串 = 预取没完成 / 预取失败，让调用方 fallback 到 CD 原始 URL）
+*/
     public static PrefetchResult tryTake(net.minecraft.core.BlockPos pos,
                                          java.util.UUID playerId,
                                          net.minecraft.world.level.Level level,

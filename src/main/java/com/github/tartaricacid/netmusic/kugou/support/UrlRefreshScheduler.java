@@ -11,13 +11,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 周期扫描玩家物品栏、检查并自动续期失效 CD URL 的调度器。
- * <p>由服务端起来时 {@link #start()} 启动；任务抛到 MinecraftServer 主线程执行（修改 ItemStack NBT 必须在主线程）。
- * 调度器本身只负责"到点了发个信号"，主线程内仍串行处理所有玩家。</p>
- * <p><b>非 final 字段</b>：重进游戏存档时 {@code onServerStopped} 会 shutdown 旧实例，下一轮
- * {@code onServerStarted} 触发 start 时若继续在已 terminated 的 executor 上 schedule 会抛
- * RejectedExecutionException，故本字段允许在启动时重建。</p>
- */
+ 周期扫描玩家物品栏、检查并自动续期失效 CD URL 的调度器。
+ 由服务端起来时 start() 启动；任务抛到 MinecraftServer 主线程执行（修改 ItemStack NBT 必须在主线程）。
+ 调度器本身只负责"到点了发个信号"，主线程内仍串行处理所有玩家。
+ 非 final 字段：重进游戏存档时 onServerStopped 会 shutdown 旧实例，下一轮
+ onServerStarted 触发 start 时若继续在已 terminated 的 executor 上 schedule 会抛
+ RejectedExecutionException，故本字段允许在启动时重建。
+*/
 public final class UrlRefreshScheduler {
     private static ScheduledExecutorService urlRefreshScheduler;
 

@@ -14,15 +14,13 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * 在 NetMusicLyricSource.provideLine 入口拦截酷狗歌曲：
- * <ul>
- *   <li>非酷狗歌曲：放行原方法（走网易云路径）</li>
- *   <li>酷狗歌曲且歌词就绪：cancel 并返回当前歌词行</li>
- *   <li>酷狗歌曲但歌词未就绪：cancel 并返回"歌词加载中..."</li>
- * </ul>
- * 不再依赖 LyricCacheDisplayCompat（LyricCache 类在 mixin prepare 前就
- * 被 DisplayWindow.updateModuleReads 加载，无法 mixin）。
- */
+ 在 NetMusicLyricSource.provideLine 入口拦截酷狗歌曲：
+ - 非酷狗歌曲：放行原方法（走网易云路径）
+ - 酷狗歌曲且歌词就绪：cancel 并返回当前歌词行
+ - 酷狗歌曲但歌词未就绪：cancel 并返回"歌词加载中..."
+ 不再依赖 LyricCacheDisplayCompat（LyricCache 类在 mixin prepare 前就
+ 被 DisplayWindow.updateModuleReads 加载，无法 mixin）。
+*/
 @Mixin(value = NetMusicLyricSource.class, remap = false)
 public class NetMusicLyricSourceDisplayCompat {
 

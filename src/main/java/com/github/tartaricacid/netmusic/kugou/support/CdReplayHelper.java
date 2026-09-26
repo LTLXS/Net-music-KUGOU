@@ -9,9 +9,9 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.items.IItemHandler;
 
 /**
- * CD URL 续期回写：异步预取结束但 setPlayToClient 已带旧 URL 起飞后，把新 URL 写回
- * TileEntity slot 0 的 CD NBT，延迟到服务端主线程重新触发 setPlayToClient，实现"无缝切歌"。
- */
+ CD URL 续期回写：异步预取结束但 setPlayToClient 已带旧 URL 起飞后，把新 URL 写回
+ TileEntity slot 0 的 CD NBT，延迟到服务端主线程重新触发 setPlayToClient，实现"无缝切歌"。
+*/
 public final class CdReplayHelper {
     private CdReplayHelper() {
     }

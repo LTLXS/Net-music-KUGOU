@@ -10,19 +10,16 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * NetMusicDisplay 兼容层 mixin 的总开关插件。
- * <p>
- * NetMusicDisplay 是 <b>可选</b> 依赖：当用户没装该 mod 时，对 {@code com.netmusicdisplay.*} 类
- * 的 mixin 必须全部跳过，否则会因找不到目标类导致 {@code ClassNotFoundException} 直接让游戏崩。
- * <p>
- * 检测方式：在 mixin 加载早期（{@code onLoad}）通过 {@code Class.forName} 试探
- * {@code com.netmusicdisplay.source.LyricCache}，结果缓存到 {@link #displayModPresent}，
- * 之后所有 {@link #shouldApplyMixin} 都直接读这个缓存。
- * <p>
- * 注意：{@code onLoad} 在 mod 主类构造之前触发，{@code ModList.get()} 可能还没就绪，
- * 所以<b>不</b>用 FML API，改用 {@code Class.forName}（它会走 classloader 试探性查找，
- * 不强制初始化），这样即使没装 NetMusicDisplay 也不会抛异常。
- */
+ NetMusicDisplay 兼容层 mixin 的总开关插件。
+ NetMusicDisplay 是 可选 依赖：当用户没装该 mod 时，对 com.netmusicdisplay.* 类
+ 的 mixin 必须全部跳过，否则会因找不到目标类导致 ClassNotFoundException 直接让游戏崩。
+ 检测方式：在 mixin 加载早期（onLoad）通过 Class.forName 试探
+ com.netmusicdisplay.source.LyricCache，结果缓存到 displayModPresent，
+ 之后所有 shouldApplyMixin 都直接读这个缓存。
+ 注意：onLoad 在 mod 主类构造之前触发，ModList.get() 可能还没就绪，
+ 所以不用 FML API，改用 Class.forName（它会走 classloader 试探性查找，
+ 不强制初始化），这样即使没装 NetMusicDisplay 也不会抛异常。
+*/
 public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
 
     private static final Logger LOGGER = LogManager.getLogger("NetMusicKuGou-DisplayCompat");
@@ -35,9 +32,9 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
     private static Boolean nmlPresent = null;
 
     /**
-     * 探测 netMusicList 自带的 Create 显示源 {@code LyricSource} 是否存在。
-     * 同样用 {@code Class.forName}（不强制初始化）而非 ModList，因为 onLoad 早于 mod 主类构造。
-     */
+ 探测 netMusicList 自带的 Create 显示源 LyricSource 是否存在。
+ 同样用 Class.forName（不强制初始化）而非 ModList，因为 onLoad 早于 mod 主类构造。
+*/
     private static synchronized boolean probeNetMusicList() {
         if (nmlPresent != null) return nmlPresent;
         boolean ok;
@@ -84,7 +81,6 @@ public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        // 接管 netMusicList 自带显示源的 mixin：只在 netMusicList 真的装了时才应用，
         // 否则目标类不存在会直接崩游戏。
         if (mixinClassName.contains("NetMusicList")) {
             return probeNetMusicList();

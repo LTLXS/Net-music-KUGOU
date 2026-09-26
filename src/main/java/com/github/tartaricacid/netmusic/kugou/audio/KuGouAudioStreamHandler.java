@@ -5,6 +5,8 @@ import com.github.tartaricacid.netmusic.client.audio.ChunkedAudioStream;
 import com.github.tartaricacid.netmusic.client.audio.MusicBufferedInputStream;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.util.Mp3Util;
+import com.github.tartaricacid.netmusic.kugou.config.ClientConfig;
+import com.github.tartaricacid.netmusic.kugou.util.CacheManager;
 import com.google.common.net.HttpHeaders;
 
 import javax.sound.sampled.AudioInputStream;
@@ -22,24 +24,13 @@ import java.time.Duration;
 import java.util.function.Function;
 
 /**
- * 酷狗专属音频流处理器（高优先级，比父模组的 NetEaseHttpHandler / DirectHttpHandler 先跑）。
- * <p>
- * <b>为什么需要它而不是复用 DirectHttpHandler？</b>
- * <p>
- * DirectHttpHandler 给所有 HTTP 请求硬编码用了 {@code NetEaseMusic.getUserAgent()}（网易云专属 UA，
- * 形如 "CloudMusic/1.2.3 ..."），把这个 UA 发去酷狗 fs.youthandroid2.kugou.com CDN：
- * <ol>
- *   <li>命中边缘热点资源 → 放行，返回 200 audio/mpeg（这时能播，所以用户感觉"有时候可以播"）</li>
- *   <li>冷源回源 / 边缘节点开启严格校验 → 直接 403 或返回 200 text/html 错误页（AudioSystem 识别不了格式，
- *       抛 UnsupportedAudioFileException，NetMusicSound 降级用 error.ogg 兜底，实际静默没声音）</li>
- * </ol>
- * 本 Handler 只拦截 host 含 {@code kugou.com} 的 URL，把 Request 伪装成官方酷狗 Android 客户端
- * （clientver=11430，和 KuGouApiClient / EchoMusic 的签名、参数选择保持一致），避免被 CDN 风控拦截。
- * <p>
- * <b>注册时机</b>：必须在 AudioStreamHandlerManager.init() 完成 {@code HANDLERS.sort} + ImmutableList.copyOf
- * <b>之前</b>调用 {@code registerHandler}，否则会被拒绝。NetMusicKuGou 在 {@code AddReloadListenerEvent}
- * / {@code ClientModConstructorEvent} 早期阶段注册即可。
- */
+ 酷狗专属音频流处理器（高优先级，先于父模组的 NetEaseHttpHandler / DirectHttpHandler）。
+ DirectHttpHandler 对所有 HTTP 请求使用网易云 UA，酷狗 CDN 会返回 403 或 text/html 错误页
+ （AudioSystem 抛 UnsupportedAudioFileException，播放静默失败）。
+ 本 Handler 只拦截 host 含 kugou.com 的 URL，以官方酷狗 Android 客户端参数
+ （clientver=11430）构造 Request。
+ 注册时机：必须在 AudioStreamHandlerManager.init() 完成 HANDLERS.sort + ImmutableList.copyOf
+ 之前调用 registerHandler；在 AddReloadListenerEvent / ClientModConstructorEvent 早期注册。*/
 public class KuGouAudioStreamHandler implements IAudioStreamHandler {
 
     public static final String KUGOU_USER_AGENT =
@@ -70,6 +61,19 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
         KuGouLogger.info("[KuGouAudio] Begin download stream: {}", urlPreview);
         long t0 = System.currentTimeMillis();
 
+        String cacheKey = CacheManager.cacheKeyForUrl(urlStr);
+        if (ClientConfig.CACHE_ENABLED.get() && CacheManager.isCached(cacheKey)) {
+            try {
+                BufferedInputStream bis = new MusicBufferedInputStream(CacheManager.openCached(cacheKey));
+                Mp3Util.skipID3(bis);
+                AudioInputStream ais = AudioSystem.getAudioInputStream(bis);
+                KuGouLogger.info("[KuGouAudio] Cache HIT, serving from disk: {}", cacheKey);
+                return ais;
+            } catch (Throwable t) {
+                KuGouLogger.warn("[KuGouAudio] cache read failed, fallback to network: {}", t.getMessage());
+            }
+        }
+
         try {
             Function<Long, HttpRequest> requestFactory = start -> {
                 HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(urlStr))
@@ -99,6 +103,8 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
                     ais.getFormat().getSampleRate(),
                     ais.getFormat().getChannels(),
                     urlPreview);
+            CacheManager.startSongDownload(urlStr, cacheKey);
+
             return ais;
         } catch (UnsupportedAudioFileException | IOException e) {
             // ===== 播放失败一定打详细错误日志，别让它"静默失败"======

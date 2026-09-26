@@ -18,24 +18,22 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 把 LRC 文本 / KRC 文本解析成父模组 {@link LyricRecord}。
- * <p>
- * 父模组的 {@code LyricParser.parseLyric} 只接受网易云 JSON 格式，所以这里另起一个
- * 解析 LRC 纯文本的版本。其内部使用父模组相同的 tick 换算公式：
- * {@code totalTick = ((minutes * 60 + seconds) * 1000 + milliseconds) / 50}。
- * <p>
- * <b>本版支持</b>：把酷狗 KRC language 字段的 {@code type=1}（中文翻译）和
- * {@code type=0}（罗马音/拼音/原语言）<b>分别解析</b>，由 renderer 根据配置选择是否显示。
- */
+ 把 LRC 文本 / KRC 文本解析成父模组 LyricRecord。
+ 父模组的 LyricParser.parseLyric 只接受网易云 JSON 格式，所以这里另起一个
+ 解析 LRC 纯文本的版本。其内部使用父模组相同的 tick 换算公式：
+ totalTick = ((minutes * 60 + seconds) * 1000 + milliseconds) / 50。
+ 本版支持：把酷狗 KRC language 字段的 type=1（中文翻译）和
+ type=0（罗马音/拼音/原语言）分别解析，由 renderer 根据配置选择是否显示。
+*/
 public final class LrcConverter {
 
     private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d+):(\\d+)[.:](\\d+)](.*)");
     private static final Pattern KRC_PATTERN = Pattern.compile("\\[(\\d+),(\\d+)\\](.*)");
     /**
-     * LRC/KRC 元信息行识别（借鉴 KuGou 的 {@code getStaticLyricLines}）。
-     * 覆盖 {@code [id]} {@code [ar]} {@code [ti]} {@code [al]} {@code [by]} {@code [offset]}
-     * {@code [hash]} {@code [language]} {@code [kana]} 等字段。
-     */
+ LRC/KRC 元信息行识别。
+ 覆盖 [id] [ar] [ti] [al] [by] [offset]
+ [hash] [language] [kana] 等字段。
+*/
     private static final Pattern METADATA_PATTERN = Pattern.compile(
             "^\\s*\\[(id|ar|ti|al|by|offset|hash|language|kana):",
             Pattern.CASE_INSENSITIVE);
@@ -43,14 +41,13 @@ public final class LrcConverter {
     private LrcConverter() {}
 
     /**
-     * 把 LRC 文本转换为父模组可用的 {@link LyricRecord}（不含翻译）。
-     * <p>
-     * 注意：tick 换算公式（{@code /50}）是父模组约定的「1 tick = 50ms」，不可更改。
-     *
-     * @param lrcText   标准 LRC 文本（{@code [mm:ss.fff]text}）
-     * @param songName  当 0 tick 没有歌词行时，用此作为第一行
-     * @return 解析结果；若 LRC 为空则返回 null
-     */
+ 把 LRC 文本转换为父模组可用的 LyricRecord（不含翻译）。
+ 注意：tick 换算公式（/50）是父模组约定的「1 tick = 50ms」，不可更改。
+
+ @param lrcText 标准 LRC 文本（[mm:ss.fff]text）
+ @param songName 当 0 tick 没有歌词行时，用此作为第一行
+ @return 解析结果；若 LRC 为空则返回 null
+*/
     public static LyricRecord toLyricRecord(String lrcText, String songName) {
         Int2ObjectSortedMap<String> map = parseLrc(lrcText);
         if (map.isEmpty()) {
@@ -73,27 +70,26 @@ public final class LrcConverter {
     }
 
     /**
-     * 把 LRC 原文 + 翻译 JSON 一起打包成 {@link LyricRecord}（<b>仅翻译</b>，不返回罗马音）。
-     * 行为兼容旧调用方；新代码请用 {@link #toLyricData}。
-     *
-     * @param lrcText   原歌词 LRC 文本
-     * @param transJson 酷狗 KRC language 字段解码后的 JSON 字符串。null/空 = 无翻译
-     * @param songName  当 0 tick 没有歌词行时，用此作为第一行
-     * @return 包含原文 + 翻译的 LyricRecord；若 LRC 为空则返回 null
-     */
+ 把 LRC 原文 + 翻译 JSON 一起打包成 LyricRecord（仅翻译，不返回罗马音）。
+ 行为兼容旧调用方；新代码请用 toLyricData。
+
+ @param lrcText 原歌词 LRC 文本
+ @param transJson 酷狗 KRC language 字段解码后的 JSON 字符串。null/空 = 无翻译
+ @param songName 当 0 tick 没有歌词行时，用此作为第一行
+ @return 包含原文 + 翻译的 LyricRecord；若 LRC 为空则返回 null
+*/
     public static LyricRecord toLyricRecordWithTranslation(String lrcText, String transJson, String songName) {
         KuGouLyricData data = toLyricData(lrcText, transJson, songName);
         return data == null ? null : data.record;
     }
 
     /**
-     * 把 LRC + 翻译 JSON + 罗马音一起解析为 {@link KuGouLyricData}。
-     * <p>
-     * <b>区别于 {@link #toLyricRecordWithTranslation}</b>：本方法同时返回 {@code romaji} map
-     * （酷狗 type=0），由 renderer 根据用户配置决定是否渲染。
-     *
-     * @return 包含原文 LyricRecord + 翻译 map + 罗马音 map；若 LRC 为空返回 null
-     */
+ 把 LRC + 翻译 JSON + 罗马音一起解析为 KuGouLyricData。
+ 区别于 toLyricRecordWithTranslation：本方法同时返回 romaji map
+ （酷狗 type=0），由 renderer 根据用户配置决定是否渲染。
+
+ @return 包含原文 LyricRecord + 翻译 map + 罗马音 map；若 LRC 为空返回 null
+*/
     public static KuGouLyricData toLyricData(String lrcText, String transJson, String songName) {
         Int2ObjectSortedMap<String> map = parseLrc(lrcText);
         if (map.isEmpty()) {
@@ -125,12 +121,6 @@ public final class LrcConverter {
         return new KuGouLyricData(record, krc.romaji);
     }
 
-    /**
-     * 判断一行主歌词是否为元数据（songName / 词:xxx / 曲:xxx / 编曲:xxx / Artist - SongName 等）。
-     * <p>
-     * 先用 {@link #METADATA_PATTERN} 识别标准 LRC/KRC 元信息标签（[id:xxx] [ar:xxx] [ti:xxx] 等），
-     * 再用前缀检测识别中文制作信息（词/曲/编/作/制作 等）。
-     */
     private static boolean isMetadataLine(String text) {
         if (text == null || text.isEmpty()) return true;
         if (METADATA_PATTERN.matcher(text).find()) return true;
@@ -183,29 +173,12 @@ public final class LrcConverter {
     }
 
     /**
-     * 解析酷狗 KRC language 字段（已 base64 解码的 JSON）为 <b>翻译 + 罗马音</b>两组映射。
-     * <p>
-     * JSON 结构（数组）：
-     * <pre>
-     * { "content": [
-     *     { "lyricContent": [...], "type": 0, "language": 0 },  // 罗马音/拼音/原语言
-     *     { "lyricContent": [...], "type": 1, "language": 0 }   // 中文翻译（仅部分歌有）
-     * ] }
-     * </pre>
-     * <p>
-     * 路由规则：
-     * <ul>
-     *   <li>type=1 → {@code translation}（中文翻译）</li>
-     *   <li>type=0 → {@code romaji}（罗马音/拼音/原语言）</li>
-     *   <li>type 字段缺失 → translation（兼容旧 KRC）</li>
-     * </ul>
-     * <p>
-     * 对齐策略：优先用 KRC 自带 {@code timePoint} 直接算 tick（与主歌词同坐标系，最准），
-     * fallback 到按行 1:1 对齐或 word-level 贪心均分（兼容没 timePoint 的老 KRC）。
-     *
-     * @param json 酷狗 language 字段解码后的 JSON
-     * @param mainLyrics 主歌词 tick 序列（按出现顺序），用于 fallback 对齐
-     */
+ 解析酷狗 KRC language 字段（已 base64 解码的 JSON）为 翻译 + 罗马音两组映射。
+ 路由规则：type=1 → translation；type=0 → romaji；type 缺失 → translation（兼容旧 KRC）。
+ 对齐策略：优先用 KRC 自带 timePoint 直接算 tick，fallback 到 1:1 对齐或 word-level 贪心均分。
+
+ @param json 酷狗 language 字段解码后的 JSON
+ @param mainLyrics 主歌词 tick 序列（按出现顺序），用于 fallback 对齐*/
     public static KrcLyrics parseKrcLyrics(
             String json,
             Int2ObjectSortedMap<String> mainLyrics) {
@@ -310,16 +283,15 @@ public final class LrcConverter {
     }
 
     /**
-     * 把 entries 写入 target。优先用 KRC 自带 timePoint 直接对齐，否则 fallback 到 1:1 / 贪心均分。
-     * <p>
-     * 结束后会跑一次"内容嗅探"重对齐 + 验证（对 type=0 罗马音和 type=1 翻译<b>都做</b>）：
-     * 1) 对每个 target entry 找最佳匹配 LRC 主歌词行，取中位数偏移，
-     *    如果得分提升 ≥20%（或旧得分 0 且新得分 > 0 对翻译）就重写 target。
-     * 2) 如果 KRC 内容跟 LRC 主歌词字符重叠太少（说明对齐错位严重），就 <b>清空 target</b>，
-     *    让 renderer 走"不显示翻译/音译"的分支。
-     *
-     * @param isRomaji  true=type=0 罗马音（要嗅探验证）/ false=type=1 翻译（也要嗅探重对齐）
-     */
+ 把 entries 写入 target。优先用 KRC 自带 timePoint 直接对齐，否则 fallback 到 1:1 / 贪心均分。
+ 结束后会跑一次"内容嗅探"重对齐 + 验证（对 type=0 罗马音和 type=1 翻译都做）：
+ 1) 对每个 target entry 找最佳匹配 LRC 主歌词行，取中位数偏移，
+ 如果得分提升 ≥20%（或旧得分 0 且新得分 > 0 对翻译）就重写 target。
+ 2) 如果 KRC 内容跟 LRC 主歌词字符重叠太少（说明对齐错位严重），就 清空 target，
+ 让 renderer 走"不显示翻译/音译"的分支。
+
+ @param isRomaji true=type=0 罗马音（要嗅探验证）/ false=type=1 翻译（也要嗅探重对齐）
+*/
     private static void alignEntries(List<KrcTimedEntry> entries,
                                       Int2ObjectSortedMap<String> mainLyrics,
                                       Int2ObjectSortedMap<String> target,
@@ -337,7 +309,7 @@ public final class LrcConverter {
                 if (en.text == null || en.text.trim().isEmpty()) continue;
                 if (isHeaderEntry(en.text)) continue;
                 int tick = (int) (en.timePoint / 50);
-                // 把 timePoint 对齐到**最近的（且不大于）**主歌词 tick，
+                // 把 timePoint 对齐到最近的（且不大于）主歌词 tick，
                 // 避免 timePoint 与主歌词 tick 有微小偏移导致 desync。
                 int snapped = snapToMainTick(tick, mainTicks);
                 target.put(snapped, en.text);
@@ -376,16 +348,13 @@ public final class LrcConverter {
     }
 
     /**
-     * 与主歌词按行对齐（重写版 v2）。
-     * <p>
-     * 核心策略（按优先级）：
-     * <ol>
-     *   <li>直接 1:1：entries 数量 == 主歌词总行数（含元数据行），逐行映射</li>
-     *   <li>非元数据 1:1：entries 数量 == 非元数据行数，仅映射到非元数据行</li>
-     *   <li>启发式：最佳努力对齐（跳过 header、处理数量差）</li>
-     * </ol>
-     * 前提：{@link #collectEntries} 已保留所有条目（含空条目），维持索引对应关系。
-     */
+ 与主歌词按行对齐（重写版 v2）。
+ 核心策略（按优先级）：
+ - 直接 1:1：entries 数量 == 主歌词总行数（含元数据行），逐行映射
+ - 非元数据 1:1：entries 数量 == 非元数据行数，仅映射到非元数据行
+ - 启发式：最佳努力对齐（跳过 header、处理数量差）
+ 前提：collectEntries 已保留所有条目（含空条目），维持索引对应关系。
+*/
     private static void alignByLine(List<KrcTimedEntry> entries,
                                     Int2ObjectSortedMap<String> mainLyrics,
                                     Int2ObjectSortedMap<String> target) {
@@ -472,29 +441,17 @@ public final class LrcConverter {
     }
 
     /**
-     * Strategy 4：内容嗅探 + 重对齐 + 验证。
-     * <p>
-     * 做三件事：
-     * <ol>
-     *   <li><b>重对齐（重要）</b>：对每个 target entry（按 nonMetaTicks 顺序），
-     *       找与之最匹配的 LRC 主歌词行，收集 (bestLrcIdx - currentIdx) 偏移，
-     *       取中位数。如果中位数偏移能改善得分 ≥20%，<b>重写 target</b>。
-     *       这能修复 KRC type=0/type=1 互相错位、或 KRC 缺前 N 行的情况
-     *       （如《怪盗ハッチさん》的 type=1 数组偏移了 3 行）。</li>
-     *   <li><b>验证当前 target</b>：遍历 target 里每条 (tick→text)，跟主歌词 tick 对应行的
-     *       kanji/kana 重叠分求和。如果总分低于阈值，说明 KRC 内容跟 LRC 主歌词几乎对不上，
-     *       <b>直接清空 target</b>（renderer 走"不显示翻译/音译"分支）。</li>
-     *   <li>（仅 type=0 罗马音严格嗅探）</li>
-     * </ol>
-     * <p>
-     * 这三件事对 timePoint 路径 <b>都要做</b>：很多 KRC 的 timePoint 跟 LRC tick 坐标系不一致
-     * （或 type=0/type=1 内容互相错位），光靠 timePoint 拼出来的不一定对得上 LRC 主歌词。
-     *
-     * @param entries    KRC 原始条目（含 header/空条目）
-     * @param mainLyrics 主歌词（key=tick, value=日文原文）
-     * @param target     当前已对齐的 map（会被清空或重写）
-     * @param isRomaji   true=type=0 罗马音，false=type=1 中文翻译
-     */
+ Strategy 4：内容嗅探 + 重对齐 + 验证。
+ - 重对齐：对每个 target entry 找最匹配的主歌词行，取偏移中位数；
+   若中位数偏移能改善得分 ≥20%，重写 target（修复 type=0/1 错位或 KRC 缺前 N 行的情况）。
+ - 验证：对 target 每条 (tick→text) 与主歌词行求 kanji/kana 重叠分求和，
+   低于阈值则清空 target（renderer 走不显示翻译/音译分支）。
+ 对 timePoint 路径同样要做：timePoint 与 LRC tick 坐标系常不一致。
+
+ @param entries KRC 原始条目（含 header/空条目）
+ @param mainLyrics 主歌词（key=tick, value=日文原文）
+ @param target 当前已对齐的 map（会被清空或重写）
+ @param isRomaji true=type=0 罗马音，false=type=1 中文翻译*/
     private static void refineByContentSniffing(List<KrcTimedEntry> entries,
                                                  Int2ObjectSortedMap<String> mainLyrics,
                                                  Int2ObjectSortedMap<String> target,
@@ -607,9 +564,9 @@ public final class LrcConverter {
     }
 
     /**
-     * 计算 target 中所有 (tick→text) 与对应主歌词行的 kanji/kana 总重叠分。
-     * 用于重对齐前后的得分对比。
-     */
+ 计算 target 中所有 (tick→text) 与对应主歌词行的 kanji/kana 总重叠分。
+ 用于重对齐前后的得分对比。
+*/
     private static int computeTotalOverlap(Int2ObjectSortedMap<String> target,
                                            Int2ObjectSortedMap<String> mainLyrics) {
         int score = 0;
@@ -632,22 +589,10 @@ public final class LrcConverter {
     }
 
     /**
-     * 给当前 KRC 内容打分（1~5），高分表示 KRC 内容看起来跟 LRC 主歌词对得上。
-     * <p>
-     * 借鉴 KuGou 的 {@code recommendationLevel}（1~5 星推荐）思路，
-     * 把"行数差异 / target 填充率 / 内容重叠"等指标合并成一个直观的分数。
-     * <ul>
-     *   <li><b>0 分</b>：KRC 行数 &gt; 2×LRC 行数（KRC 远多于 LRC = 拆字/重复 = 不可信，
-     *       借鉴 {@code hasLargeDurationDiff} 思路）<b>或</b> target 里没有任何 entry 对应到主歌词 tick
-     *       （timePoint 路径下极端错位）</li>
-     *   <li><b>1 分</b>：底分</li>
-     *   <li><b>+1</b>：行数差异 ≤ 33%（兼容 KRC 部分翻译：KRC &lt; LRC 是合法的）</li>
-     *   <li><b>+1</b>：target 填充 ≥ mainTicks/2（Strategy 1/2/3 成功填了大部分）</li>
-     *   <li><b>+1</b>：KRC 行跟 LRC 主歌词的 kanji/kana 重叠分 &gt; 0
-     *       （至少有几行字符能对得上）</li>
-     * </ul>
-     * 分数 ≤ 1 时认为 KRC 不可信，调用方应清空 target。
-     */
+ 给当前 KRC 内容打分（1~5）：行数差异、target 填充率、内容重叠合并为单一分数。
+ - 0 分：KRC 行数 > 2×LRC（拆字/重复，不可信），或 target 无 entry 对应主歌词 tick
+ - 底分 1；行数差异 ≤33% +1；target 填充 ≥ mainTicks/2 +1；kanji/kana 重叠分 >0 再 +1
+ 分数 ≤ 1 时视为不可信，调用方应清空 target。*/
     private static int scoreKrcQuality(int krcCount, int nonMetaCount, int targetSize,
                                        int mainTicksLength, int targetChecked, int targetScore,
                                        List<String> krcLines, List<String> nonMetaLines) {
@@ -701,9 +646,9 @@ public final class LrcConverter {
     }
 
     /**
-     * 简易 romaji → kana 转换。覆盖基本元音、清音、浊音、半浊音、拗音、拨音「ん」/「ン」等。
-     * 长音、促音、外来语特殊写法不能完美处理，但对"内容嗅探"足够。
-     */
+ 简易 romaji → kana 转换。覆盖基本元音、清音、浊音、半浊音、拗音、拨音「ん」/「ン」等。
+ 长音、促音、外来语特殊写法不能完整覆盖，但对"内容嗅探"足够。
+*/
     private static String romajiToKana(String romaji) {
         if (romaji == null || romaji.isEmpty()) return "";
         String lower = romaji.toLowerCase();
@@ -789,10 +734,10 @@ public final class LrcConverter {
     }
 
     /**
-     * 判断主歌词是否"主要是 CJK"。content-sniffing 用 kanji/kana 重叠打分；
-     * 如果主歌词全是非 CJK 文本（意大利语/英语/拉丁转写等），重叠永远是 0，会把
-     * 正确的翻译误判为"错位"清空。这里要求非空字符里至少 30% 是 CJK 才信任嗅探。
-     */
+ 判断主歌词是否"主要是 CJK"。content-sniffing 用 kanji/kana 重叠打分；
+ 如果主歌词全是非 CJK 文本（意大利语/英语/拉丁转写等），重叠永远是 0，会把
+ 正确的翻译误判为"错位"清空。这里要求非空字符里至少 30% 是 CJK 才信任嗅探。
+*/
     private static boolean isMainLyricsCjk(List<String> lines) {
         if (lines == null || lines.isEmpty()) return false;
         int cjk = 0;
@@ -824,8 +769,8 @@ public final class LrcConverter {
     }
 
     /**
-     * 带时间戳的 KRC 翻译条目。timePoint < 0 表示没有时间戳（需要 fallback 对齐）。
-     */
+ 带时间戳的 KRC 翻译条目。timePoint < 0 表示没有时间戳（需要 fallback 对齐）。
+*/
     private static final class KrcTimedEntry {
         final long timePoint;
         final String text;

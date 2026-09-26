@@ -15,12 +15,11 @@ import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
- * 客户端 → 服务端：把 fileHash / albumId 写进 CD 的 DataComponent。
- * <p>
- * 用法：在 SetMusicIDMessage（netmusic 自带）发完之后立刻发这个包，
- * 服务端会在玩家打开的容器 slot 0 找到刚烧好的 CD 并附加识别信息。
- * 之所以要单独一个包，是因为我们不能改 netmusic 自带的 SetMusicIDMessage。
- */
+ 客户端 → 服务端：把 fileHash / albumId 写进 CD 的 DataComponent。
+ 用法：在 SetMusicIDMessage（netmusic 自带）发完之后立刻发这个包，
+ 服务端会在玩家打开的容器 slot 0 找到刚烧好的 CD 并附加识别信息。
+ 之所以要单独一个包，是因为我们不能改 netmusic 自带的 SetMusicIDMessage。
+*/
 public record AddCdRefreshInfoMessage(
         String fileHash,
         String albumId
@@ -76,11 +75,10 @@ public record AddCdRefreshInfoMessage(
     }
 
     /**
-     * 异步拉取酷狗歌词并写入 CD DataComponent。
-     * <p>
-     * 流程：searchLyric(hash, keyword) → getLyric(id, accesskey) → writeLyric(cd)
-     * 任何步骤失败只记日志不抛异常，不影响主刻录流程。
-     */
+ 异步拉取酷狗歌词并写入 CD DataComponent。
+ 流程：searchLyric(hash, keyword) → getLyric(id, accesskey) → writeLyric(cd)
+ 任何步骤失败只记日志不抛异常，不影响主刻录流程。
+*/
     private static void fetchAndStoreLyric(ItemStack cd, AddCdRefreshInfoMessage msg) {
         ItemMusicCD.SongInfo info = ItemMusicCD.getSongInfo(cd);
         if (info == null) return;

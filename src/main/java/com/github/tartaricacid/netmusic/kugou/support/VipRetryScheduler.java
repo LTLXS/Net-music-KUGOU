@@ -11,10 +11,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 周期重试每日 VIP 领取的调度器（仅在客户端构造；daemon 线程保证不会阻塞游戏进程退出）。
- * <p>调度器会在第一次自动领取失败后按 {@link ClientConfig#VIP_RETRY_INTERVAL_MINUTES} 的间隔持续重试，
- * 直到服务端返回 SUCCESS / ALREADY_CLAIMED，或日期跨日。</p>
- */
+ 周期重试每日 VIP 领取的调度器（仅在客户端构造；daemon 线程保证不会阻塞游戏进程退出）。
+ 调度器会在第一次自动领取失败后按 VIP_RETRY_INTERVAL_MINUTES 的间隔持续重试，
+ 直到服务端返回 SUCCESS / ALREADY_CLAIMED，或日期跨日。
+*/
 public final class VipRetryScheduler {
     private static ScheduledExecutorService vipScheduler;
 

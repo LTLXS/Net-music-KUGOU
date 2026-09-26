@@ -9,23 +9,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 字体图集懒加载兜底：当任何路径含 {@code "font"} 的贴图被注册到
- * {@link TextureManager} 时，立刻切到 NEAREST。
- * <p>
- * <b>为什么需要这个：</b>
- * <ul>
- *   <li>{@code GlyphRenderTypes.createFor*Texture(rl)} 返回时，字体图集贴图
- *       经常还没加载（懒加载）</li>
- *   <li>等贴图真被 bind 时已经过了我的钩子点</li>
- *   <li>{@link TextureManager#register(ResourceLocation, AbstractTexture)} 是所有
- *       贴图注册的统一入口——任何字体图集**最终**都会经过这里</li>
- *   <li>在 TAIL 注入：贴图对象已经构造完毕，可直接 {@code setFilter(false, false)}</li>
- * </ul>
- * <p>
- * <b>影响：</b>整个游戏所有字体（{@code minecraft:font/ascii}、
- * {@code minecraft:font/accents_*}、{@code minecraft:font/nonlatin_*} 等）都 NEAREST。
- * 与 {@link GlyphRenderTypesMixin} 互补。
- */
+ 字体图集懒加载兜底：路径含 "font" 的贴图注册到 TextureManager 时立刻切到 NEAREST。
+ GlyphRenderTypes.createFor*Texture 返回时图集贴图常未加载（懒加载），
+ 而 register(ResourceLocation, AbstractTexture) 是所有贴图注册的统一入口；
+ 在 TAIL 注入时贴图已构造完毕，可直接 setFilter(false, false)。
+ 作用于全部原版字体图集，与 GlyphRenderTypesMixin 互补。*/
 @Mixin(value = TextureManager.class, remap = false)
 public class TextureManagerMixin {
 

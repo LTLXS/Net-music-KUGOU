@@ -5,13 +5,11 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 歌词候选本地匹配评分。移植自 EchoMusic 桌面端 {@code songMatching.ts}。
- * <p>
- * 酷狗搜索接口返回的 {@code score} 只是服务端粗排，存在「同名不同歌」「伴奏/纯音乐占位」等情况。
- * 这里用标题相似度 + 歌手匹配 + 时长差异做本地二次评分，与父模组实际播放的歌曲对齐。
- * <p>
- * 加权总分：{@code 0.55 * title + 0.30 * artist + 0.15 * duration}，取值 0..1。
- */
+ 歌词候选本地匹配评分。
+ 酷狗搜索接口返回的 score 只是服务端粗排，存在「同名不同歌」「伴奏/纯音乐占位」等情况。
+ 这里用标题相似度 + 歌手匹配 + 时长差异做本地二次评分，与父模组实际播放的歌曲对齐。
+ 加权总分：0.55 * title + 0.30 * artist + 0.15 * duration，取值 0..1。
+*/
 public final class LyricMatchScorer {
 
     private LyricMatchScorer() {

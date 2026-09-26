@@ -11,15 +11,15 @@ public final class CdNbtHelper {
     private CdNbtHelper() {}
 
     /**
-     * 判断 ItemStack 是不是 netmusic 的音乐 CD（避免对其他物品误操作）
-     */
+ 判断 ItemStack 是不是 netmusic 的音乐 CD（避免对其他物品误操作）
+*/
     public static boolean isMusicCd(ItemStack stack) {
         return stack != null && !stack.isEmpty() && stack.getItem() instanceof ItemMusicCD;
     }
 
     /**
-     * 读取 CD 上的 {@link CdAddonData}（不可变 record）。没有则返回 {@link CdAddonData#EMPTY}。
-     */
+ 读取 CD 上的 CdAddonData（不可变 record）。没有则返回 EMPTY。
+*/
     public static CdAddonData getData(ItemStack cd) {
         if (!isMusicCd(cd)) {
             return CdAddonData.EMPTY;
@@ -83,10 +83,10 @@ public final class CdNbtHelper {
     }
 
     /**
-     * 把 LRC 文本写到 CD DataComponent（烧录时用）。
-     * <p>这里存的是 LRC 原始文本，不是解析后的结构。客户端拿到后再用
-     * {@code LrcConverter} 解析，这样可以避免 LRC 解析逻辑被版本化到 NBT 上造成兼容性问题。</p>
-     */
+ 把 LRC 文本写到 CD DataComponent（烧录时用）。
+ 这里存的是 LRC 原始文本，不是解析后的结构。客户端拿到后再用
+ LrcConverter 解析，这样可以避免 LRC 解析逻辑被版本化到 NBT 上造成兼容性问题。
+*/
     public static void writeLyric(ItemStack cd, String lrcText, String songName) {
         if (!isMusicCd(cd) || lrcText == null || lrcText.isEmpty()) {
             return;

@@ -9,11 +9,14 @@ import me.shedaniel.clothconfig2.api.ConfigBuilder;
 import me.shedaniel.clothconfig2.api.ConfigCategory;
 import me.shedaniel.clothconfig2.api.ConfigEntryBuilder;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.toasts.SystemToast;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
-/**
- * Cloth Config 配置界面构建（原内联在 {@code NetMusicKuGou#createConfigScreen}，现已抽出独立成类）。
- */
+import com.github.tartaricacid.netmusic.kugou.util.CacheManager;
+
+import java.util.Optional;
+
 public final class KuGouConfigScreen {
     private KuGouConfigScreen() {
     }
@@ -22,7 +25,10 @@ public final class KuGouConfigScreen {
         ConfigBuilder builder = ConfigBuilder.create()
                 .setParentScreen(parent)
                 .setTitle(Component.translatable("netmusic_kugou.config.title"))
-                .setSavingRunnable(ClientConfig.SPEC::save);
+                .setSavingRunnable(() -> {
+                    ClientConfig.SPEC.save();
+                    ServerConfig.SPEC.save();
+                });
 
         ConfigEntryBuilder entryBuilder = builder.entryBuilder();
 
@@ -60,20 +66,35 @@ public final class KuGouConfigScreen {
                 .setSaveConsumer(ClientConfig::setProvider)
                 .build());
 
-        sourceCat.addEntry(entryBuilder.startStrField(Component.translatable("netmusic_kugou.config.vip_cookie"), ClientConfig.getVipCookie())
+        sourceCat.addEntry(entryBuilder.startStrField(Component.translatable("netmusic_kugou.config.vip_cookie"), ServerConfig.getVipCookie())
                 .setDefaultValue("")
                 .setTooltip(Component.translatable("netmusic_kugou.config.vip_cookie.tooltip"))
-                .setSaveConsumer(ClientConfig.VIP_COOKIE::set)
+                .setSaveConsumer(ServerConfig.VIP_COOKIE::set)
                 .build());
 
         sourceCat.addEntry(entryBuilder.startSelector(
                 Component.translatable("netmusic_kugou.config.audio_quality"),
-                AudioQuality.values(),
+                ClientConfig.getSelectableAudioQualities(),
                 ClientConfig.getAudioQuality())
                 .setDefaultValue(AudioQuality.HQ)
                 .setTooltip(Component.translatable("netmusic_kugou.config.audio_quality.tooltip"))
                 .setNameProvider(q -> q.getDisplayName())
                 .setSaveConsumer(ClientConfig::setAudioQuality)
+                .build());
+
+        sourceCat.addEntry(entryBuilder.startBooleanToggle(
+                        Component.translatable("netmusic_kugou.config.viper_tape_enabled"),
+                        ClientConfig.isViperTapeEnabled())
+                .setDefaultValue(false)
+                .setTooltip(Component.translatable("netmusic_kugou.config.viper_tape_enabled.tooltip"))
+                .setSaveConsumer(v -> {
+                    ClientConfig.VIPER_TAPE_ENABLED.set(v);
+                    // 关闭母带时，若当前音质就是母带则回退到 Hi-Res
+                    if (!v && ClientConfig.AUDIO_QUALITY.get() != null
+                            && AudioQuality.VIPER_TAPE.getValue().equalsIgnoreCase(ClientConfig.AUDIO_QUALITY.get())) {
+                        ClientConfig.setAudioQuality(AudioQuality.HIGH);
+                    }
+                })
                 .build());
 
         ConfigCategory vipCat = builder.getOrCreateCategory(Component.translatable("netmusic_kugou.config.category.vip"));
@@ -129,6 +150,51 @@ public final class KuGouConfigScreen {
                 .setDefaultValue(false)
                 .setTooltip(Component.translatable("netmusic_kugou.config.show_romaji.tooltip"))
                 .setSaveConsumer(ClientConfig.LYRIC_SHOW_ROMAJI::set)
+                .build());
+
+        ConfigCategory moreCat = builder.getOrCreateCategory(Component.translatable("netmusic_kugou.config.category.more"));
+
+        moreCat.addEntry(entryBuilder.startBooleanToggle(Component.translatable("netmusic_kugou.config.cache_enabled"),
+                        ClientConfig.CACHE_ENABLED.get())
+                .setDefaultValue(true)
+                .setTooltip(Component.translatable("netmusic_kugou.config.cache_enabled.tip"))
+                .setSaveConsumer(ClientConfig.CACHE_ENABLED::set)
+                .build());
+
+        moreCat.addEntry(entryBuilder.startLongSlider(Component.translatable("netmusic_kugou.config.cache_max_mb"),
+                        ClientConfig.CACHE_MAX_MB.get(), 0L, 8192L)
+                .setDefaultValue(2048L)
+                .setTooltip(Component.translatable("netmusic_kugou.config.cache_max_mb.tip"))
+                .setSaveConsumer(ClientConfig.CACHE_MAX_MB::set)
+                .build());
+
+        ButtonEntry clearCacheButton = new ButtonEntry(
+                Component.empty(),
+                Component.translatable("netmusic_kugou.config.clear_all_cache"),
+                () -> {
+                    CacheManager.clearAll();
+                    Minecraft.getInstance().getToasts().addToast(new SystemToast(SystemToast.SystemToastId.NARRATOR_TOGGLE,
+                            Component.translatable("netmusic_kugou.config.clear_all_cache.done"), null));
+                },
+                () -> Optional.of(new Component[]{
+                        Component.translatable("netmusic_kugou.config.clear_all_cache.tip")}));
+        moreCat.addEntry(clearCacheButton);
+
+        moreCat.addEntry(entryBuilder.startSelector(
+                        Component.translatable("netmusic_kugou.config.log_level"),
+                        KuGouLogger.LogLevel.values(),
+                        KuGouLogger.getLevel())
+                .setDefaultValue(KuGouLogger.LogLevel.NORMAL)
+                .setTooltip(Component.translatable("netmusic_kugou.config.log_level.tooltip"))
+                .setNameProvider(lvl -> Component.translatable(switch (lvl) {
+                    case MINIMAL -> "netmusic_kugou.config.log_level.minimal";
+                    case NORMAL -> "netmusic_kugou.config.log_level.normal";
+                    case DETAILED -> "netmusic_kugou.config.log_level.detailed";
+                }))
+                .setSaveConsumer(lvl -> {
+                    ServerConfig.LOG_LEVEL.set(lvl);
+                    KuGouLogger.setLevel(lvl);
+                })
                 .build());
 
         return builder.build();

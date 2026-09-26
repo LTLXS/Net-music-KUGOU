@@ -31,13 +31,12 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Mixin 到父模组 {@code MusicPlayerRenderer.renderLyric}，把渲染从 2 行（原文 + 翻译）
- * 扩展到最多 3 行（原文 + 翻译 + 罗马音），行数由 {@link ClientConfig#LYRIC_SHOW_TRANSLATION}
- * 和 {@link ClientConfig#LYRIC_SHOW_ROMAJI} 控制。
- * <p>
- * 父模组"停止播放就清空 lyricRecord"的位置我们同步清空
- * {@link BlockRomajiRegistry}，避免侧通道无限增长。
- */
+ Mixin 到父模组 MusicPlayerRenderer.renderLyric，把渲染从 2 行（原文 + 翻译）
+ 扩展到最多 3 行（原文 + 翻译 + 罗马音），行数由 LYRIC_SHOW_TRANSLATION
+ 和 LYRIC_SHOW_ROMAJI 控制。
+ 父模组"停止播放就清空 lyricRecord"的位置我们同步清空
+ BlockRomajiRegistry，避免侧通道无限增长。
+*/
 @Mixin(value = MusicPlayerRenderer.class, remap = false)
 public abstract class MusicPlayerRendererMixin {
 
@@ -48,10 +47,10 @@ public abstract class MusicPlayerRendererMixin {
     private BlockEntityRenderDispatcher dispatcher;
 
     /**
-     * @author KuGouAddon
-     * @reason 把父模组的"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行，
-     *         行数由 ClientConfig 控制。
-     */
+ @author KuGouAddon
+ @reason 把父模组的"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行，
+ 行数由 ClientConfig 控制。
+*/
     @Overwrite(remap = false)
     private void renderLyric(TileEntityMusicPlayer te, PoseStack poseStack,
                               MultiBufferSource bufferIn, int combinedLightIn, float partialTicks) {
@@ -228,7 +227,6 @@ public abstract class MusicPlayerRendererMixin {
         com.mojang.blaze3d.systems.RenderSystem.enableCull();
     }
 
-    /** 当前播放进度（已播放 tick）= 总时长 - 剩余时间。歌词 map 的 key 即 tick 偏移。 */
     private static int currentPlayTick(TileEntityMusicPlayer te) {
         int remain = te.getCurrentTime();
         try {
@@ -248,10 +246,36 @@ public abstract class MusicPlayerRendererMixin {
         return 0;
     }
 
+
+/*
+           ....:::--==++**#%%%.          -%%+:        :=======================================      
+       #@@@@@@@@@@@@@@@@@@@@@@*        -#@@@@@%=      +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@.     
+       =@@@@@@@@@@@@@@@@@@@@@@@.     =#@@@@@@@#:      +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@.     
+       .@@%%%%%#####**++==+=-..   :*@@@@@@@@#-        .----==---------%@@@@@@*:-:::::--%@@@@@@      
+        :-=+=  -+*#%#    :@%##*+*%@@@@@@@@#:               %%%#**-    *@@@@@@#=========@@@@@@=      
+       =@@@@@= :@@@@@#   %@@@@@-#@@@@@@%+:                *@@@@@@:    #@@@@@@@@@@@@@@@@@-:=++       
+        #@@@@@- -@@@@@# *@@@@@:  -@@@*-   :#@+.          +@@@@@@@*-.  *@@@@@@#==========            
+         %@@@@@: =%#*=-+@@@@@-    .-    :*@@@@@#-       *@@@@@@@@@@@%#@@@@@@@#==========++++***=    
+         :#*=-. :+*+====:=+#-         -#@@@@@@@@=     =%@@@@@@##@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@:    
+       .::::..::*@@@@@@#...::::    :+%@@@@@@@%=     :%@@@@@@@=  .-+#%%@%@@@@@@@@@@@@@@@@@@@@@@*     
+       =@@@@@@@@@@@@@@@@@@@@@@@::+%@@@@@@@@%=        .+%@@@*.         .*******-...............      
+       =@@@@@@@@@@@@@@@@@@@@@@@:%@@@@@@@@#-             -%@**########*#@@@@@@@#************:        
+       -%#%%##@@@@@@@@@@#####%#  =@@@@#=.   =*:          +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@=        
+             +@@@@@@@@@* ++:      .*=.    :#@@@%=.       +@@@@@@+:::::-@@@@@@@=:::::*@@@@@@=        
+           -%@@@@@@@@@@%@@@@%=          :#@@@@@@@%.      +@@@@@@*-===-=@@@@@@@+-=-=-*@@@@@@=        
+         -#@@@@@@@@@@@@@@@@@@@@*:    .=%@@@@@@@@+        +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@=        
+      :+%@@@@@@@#@@@@@@*=%@@@@@#. .-*@@@@@@@@@*.         -*************@@@@@@@#*****%@@@@@#:        
+      *@@@@@@@#.-@@@@@@*  =%@%=.=#@@@@@@@@@@+.                        .@@@@@@@-    -%@@@@@%-        
+       :%@@@#-  =@@@@@@*    -.*@@@@@@@@@@%=.          #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@%-      
+         +#:    =@@@@@@*      .+@@@@@@%+:             +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@#.    
+                =@@@@@@*        :%@%+:                :%%#######*****++++++=====-------:-%@@#=:     
+                 .......          .                                                       -.        
+*/
+
     /**
-     * 彩蛋歌曲关键字列表。
-     * 《アンノウン・マザーグース》的多种写法，用于触发镜像歌词效果。
-     */
+ 彩蛋歌曲关键字列表。
+ 《アンノウン・マザーグース》的多种写法，用于触发镜像歌词效果。
+*/
     private static final Set<String> MIRROR_EGG_KEYWORDS = Set.of(
             "アンノウン", "unknown mother", "unknownmothergoose",
             "あんのうん", "announ", "mothergoose"
@@ -274,8 +298,8 @@ public abstract class MusicPlayerRendererMixin {
     }
 
     /**
-     * 检测当前歌曲是否为彩蛋歌曲（触发镜像效果）。
-     */
+ 检测当前歌曲是否为彩蛋歌曲（触发镜像效果）。
+*/
     private static boolean isMirrorEggSong(String songName) {
         if (songName == null) return false;
         String lower = songName.toLowerCase();
@@ -285,11 +309,6 @@ public abstract class MusicPlayerRendererMixin {
         return false;
     }
 
-    /**
-     * 彩蛋（镜像歌词交换）状态：原先是全局静态字段，多个音乐盒同时播放 / 切换歌曲时
-     * 会互相污染。改为按方块坐标（每个音乐盒）独立保存。
-     * 数组 [lastSeenTick, occurCount, lastOccurLyricTick, swapFiredTick]，初始 [-1,0,-1,-1]。
-     */
     private static final ConcurrentHashMap<BlockPos, int[]> EGG_SWAP_STATE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<BlockPos, String> EGG_SONG_BY_POS = new ConcurrentHashMap<>();
 
@@ -299,20 +318,10 @@ public abstract class MusicPlayerRendererMixin {
     }
 
     /**
-     * "あなたには僕が見えるか?" 在<b>第二次</b>和<b>第三次</b>出现时触发交换，
-     * 之后（第 4 次及以后）不再触发。
-     * <p>
-     * <b>用当前行 tick 作行标识</b>（当前行 key）：行切换时它必然
-     * 变化、同行渲染期间必然不变——比文本比对（副歌同一句文本相同）和进度差
-     * （歌词行粒度与渲染时机对不上）都可靠：
-     * <ul>
-     *   <li>首次出现 → occurCount=1，不交换</li>
-     *   <li>第二次出现（新行）→ occurCount=2，交换，记录 swapFiredTick</li>
-     *   <li>第三次出现（新行）→ occurCount=3，交换，记录 swapFiredTick</li>
-     *   <li>swapFiredTick 行的后续帧 → 持续交换；tick 变化即停止</li>
-     *   <li>tick 大幅回退（重播）或换歌 → 全部重置</li>
-     * </ul>
-     */
+ "あなたには僕が見えるか?" 在第二次和第三次出现时触发交换，之后不再触发。
+ 用当前行 tick 作行标识（行切换必变、同行渲染期间不变）：
+ 首次出现不交换；第二、三次出现交换并记录 swapFiredTick；
+ swapFiredTick 行的后续帧持续交换，tick 变化即停止；tick 大幅回退或换歌全部重置。*/
     private static boolean isSwapMoment(BlockPos pos, String songName, String lyric, int currentLineTick) {
         int[] st = EGG_SWAP_STATE.computeIfAbsent(pos, p -> new int[]{-1, 0, -1, -1});
         String lastEggSong = EGG_SONG_BY_POS.get(pos);

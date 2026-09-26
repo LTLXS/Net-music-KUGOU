@@ -19,18 +19,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import static com.github.tartaricacid.netmusic.client.audio.MusicPlayManager.MUSIC_163_URL;
 
 /**
- * Mixin 到父模组 {@code MaidMusicToClientMessage.showLyric}。
- * <p>
- * 父模组原版：仅当 URL 是网易云时创建 {@code LyricChatBubbleData}。酷狗 URL 直接跳过 → 气泡不存在。
- * <p>
- * <b>本 Mixin 行为</b>：
- * <ol>
- *   <li><b>无论 URL 类型</b>：从女仆背包 CD 上读 LRC NBT 写入 {@code KuGouMaidLyricCache}（JVM 共享），
- *       这样 {@code LyricChatBubbleRenderer} 构造时 {@code LyricChatBubbleRendererMixin} 能拿到</li>
- *   <li><b>仅当 URL 不是网易云</b>：自己创建一个 {@code LyricChatBubbleData(musicId=0)} 并
- *       {@code addChatBubble}（必须在服务端 add，entity data 同步到客户端才能正确显示）</li>
- * </ol>
- */
+ Mixin 到父模组 MaidMusicToClientMessage.showLyric。
+ 父模组原版：仅当 URL 是网易云时创建 LyricChatBubbleData。酷狗 URL 直接跳过 → 气泡不存在。
+ 本 Mixin 行为：
+ - 无论 URL 类型：从女仆背包 CD 上读 LRC NBT 写入 KuGouMaidLyricCache（JVM 共享），
+ 这样 LyricChatBubbleRenderer 构造时 LyricChatBubbleRendererMixin 能拿到
+ - 仅当 URL 不是网易云：自己创建一个 LyricChatBubbleData(musicId=0) 并
+ addChatBubble（必须在服务端 add，entity data 同步到客户端才能正确显示）
+*/
 @Mixin(MaidMusicToClientMessage.class)
 public class MaidMusicToClientMessageShowLyricMixin {
 

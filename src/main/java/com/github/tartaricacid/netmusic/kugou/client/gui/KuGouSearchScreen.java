@@ -156,8 +156,7 @@ public class KuGouSearchScreen extends Screen {
             for (int i = 0; i < lines.length && i < 8; i++) {
                 int color = lines[i].contains("✓") ? 0x55FF55 :
                             lines[i].contains("✗") || lines[i].contains("⚠") ? 0xFFAA00 :
-                            lines[i].contains("=") || lines[i].contains("-") || lines[i].contains("账号") ? 0xCCCCCC :
-                            0xFFFFFF;
+                            0xCCCCCC;
                 graphics.drawString(this.font, lines[i], this.width / 2 - 100, vipY + i * 9, color, false);
             }
         }
@@ -292,9 +291,9 @@ public class KuGouSearchScreen extends Screen {
         KuGouApiClient.getVipInfo()
             .thenAccept(json -> {
                 vipStatusText = KuGouApiClient.parseVipStatus(json);
-                if (vipStatusText.contains("已开通") || vipStatusText.contains("✓")) {
+                if (vipStatusText.contains("✓")) {
                     this.status = Component.translatable("netmusic_kugou.search.vip_ok");
-                } else if (vipStatusText.contains("未开通") || vipStatusText.contains("无VIP")) {
+                } else if (vipStatusText.contains("⚠")) {
                     this.status = Component.translatable("netmusic_kugou.search.vip_none");
                 } else {
                     this.status = Component.translatable("netmusic_kugou.search.query_done");
@@ -328,18 +327,18 @@ public class KuGouSearchScreen extends Screen {
     }
 
     /**
-     * 父模组 CD 烧录界面的搜索弹窗期间不要让游戏暂停，否则 NetMusic 会把方块音乐判定为"游戏已暂停"而停止播放。
-     */
+ 父模组 CD 烧录界面的搜索弹窗期间不要让游戏暂停，否则 NetMusic 会把方块音乐判定为"游戏已暂停"而停止播放。
+*/
     @Override
     public boolean isPauseScreen() {
         return false;
     }
 
     /**
-     * 默认 {@code Screen.renderBlurredBackground} 会无条件调
-     * {@code gameRenderer.processBlurEffect()} 把世界模糊化，导致弹窗内容被糊。
-     * 覆盖为 no-op 关闭模糊。
-     */
+ 默认 Screen.renderBlurredBackground 会无条件调
+ gameRenderer.processBlurEffect() 把世界模糊化，导致弹窗内容被糊。
+ 覆盖为 no-op 关闭模糊。
+*/
     @Override
     protected void renderBlurredBackground(float partialTick) {
     }

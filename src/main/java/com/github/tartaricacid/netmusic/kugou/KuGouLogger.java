@@ -15,14 +15,12 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 模组独立日志系统。
- * <p>
- * 日志文件存储在 {@code config/NETMUSICCANNEEDKUGOU/} 目录下，
- * 最多保留 6 个日志文件，按时间排序，超出自动删除最旧的。
- * <p>
- * 同时保留 SLF4J Logger 输出到游戏主日志（latest.log），
- * 独立日志文件提供更清晰的模组专属日志视图。
- */
+ 模组独立日志系统。
+ 日志文件存储在 config/NETMUSICCANNEEDKUGOU/ 目录下，
+ 最多保留 6 个日志文件，按时间排序，超出自动删除最旧的。
+ 同时保留 SLF4J Logger 输出到游戏主日志（latest.log），
+ 独立日志文件提供更清晰的模组专属日志视图。
+*/
 public final class KuGouLogger {
     private static final String MOD_ID = "netmusic_kugou";
     private static final String LOG_DIR_NAME = "NETMUSICCANNEEDKUGOU";
@@ -35,6 +33,24 @@ public final class KuGouLogger {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     public static final Path LOG_DIR = FMLPaths.CONFIGDIR.get().resolve(LOG_DIR_NAME);
+
+    /**
+ 日志级别：
+ - MINIMAL — 仅 ERROR 与 WARN（最安静）
+ - NORMAL — 在 MINIMAL 基础上 + INFO（默认，保持原有行为）
+ - DETAILED — 在 NORMAL 基础上 + DEBUG / VERBOSE（调试用）
+*/
+    public enum LogLevel { MINIMAL, NORMAL, DETAILED }
+
+    private static volatile LogLevel level = LogLevel.NORMAL;
+
+    public static void setLevel(LogLevel lvl) {
+        level = (lvl == null) ? LogLevel.NORMAL : lvl;
+    }
+
+    public static LogLevel getLevel() {
+        return level;
+    }
 
     private static Path currentLogFile;
 
@@ -78,11 +94,13 @@ public final class KuGouLogger {
     }
 
     public static void info(String msg) {
+        if (level == LogLevel.MINIMAL) return;
         LOGGER.info(msg);
         enqueue("INFO", msg);
     }
 
     public static void info(String format, Object... args) {
+        if (level == LogLevel.MINIMAL) return;
         LOGGER.info(format, args);
         enqueue("INFO", formatMessage(format, args));
     }
@@ -113,16 +131,29 @@ public final class KuGouLogger {
     }
 
     public static void debug(String msg) {
+        if (level != LogLevel.DETAILED) return;
         LOGGER.debug(msg);
         enqueue("DEBUG", msg);
     }
 
     public static void debug(String format, Object... args) {
+        if (level != LogLevel.DETAILED) return;
         LOGGER.debug(format, args);
         enqueue("DEBUG", formatMessage(format, args));
     }
 
-    // ===== 内部方法 =====
+    public static void verbose(String msg) {
+        if (level != LogLevel.DETAILED) return;
+        LOGGER.debug(msg);
+        enqueue("VERBOSE", msg);
+    }
+
+    public static void verbose(String format, Object... args) {
+        if (level != LogLevel.DETAILED) return;
+        LOGGER.debug(format, args);
+        enqueue("VERBOSE", formatMessage(format, args));
+    }
+
 
     private static void enqueue(String level, String msg) {
         if (currentLogFile == null) return;
@@ -148,8 +179,8 @@ public final class KuGouLogger {
     }
 
     /**
-     * 清理旧日志文件，只保留最新的 MAX_LOG_FILES 个。
-     */
+ 清理旧日志文件，只保留最新的 MAX_LOG_FILES 个。
+*/
     private static void cleanOldLogs() {
         try {
             List<Path> logFiles = new ArrayList<>();

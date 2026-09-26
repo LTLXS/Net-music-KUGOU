@@ -15,12 +15,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 服务端 Mixin：在父模组 {@link CDBurnerMenu#setSongInfo} 刻录完成后，
- * 从 {@link BurnDataCache} 取出 fileHash/albumId/歌词，同步写入 CD NBT。
- * <p>
- * 歌词由客户端在刻录时并行拉取，通过 BurnDataCache 传递到服务端，
- * 刻录完成时 CD 上已带有歌词，播放时无需等待。
- */
+ 服务端 Mixin：在父模组 setSongInfo 刻录完成后，
+ 从 BurnDataCache 取出 fileHash/albumId/歌词，同步写入 CD NBT。
+ 歌词由客户端在刻录时并行拉取，通过 BurnDataCache 传递到服务端，
+ 刻录完成时 CD 上已带有歌词，播放时无需等待。
+*/
 @Mixin(value = CDBurnerMenu.class, remap = false)
 public class CDBurnerMenuMixin {
 

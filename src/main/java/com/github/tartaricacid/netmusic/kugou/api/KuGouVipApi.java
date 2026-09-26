@@ -6,6 +6,7 @@ import com.github.tartaricacid.netmusic.kugou.util.KuGouSignature;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import net.minecraft.network.chat.Component;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -20,15 +21,13 @@ public final class KuGouVipApi {
     public static volatile String lastVipResultMessage = "";
 
     /**
-     * 每次领取操作的结果状态。用于驱动周期重试逻辑：
-     * <ul>
-     *   <li>NEVER_TRIED — 启动后还没尝试过</li>
-     *   <li>IN_PROGRESS — 当前正在请求中（避免并发）</li>
-     *   <li>SUCCESS — 领取成功</li>
-     *   <li>ALREADY_CLAIMED — 服务端返回 20002（今日已领）</li>
-     *   <li>FAILED — 其他失败（网络错误、签名错误等）</li>
-     * </ul>
-     */
+ 每次领取操作的结果状态。用于驱动周期重试逻辑：
+ - NEVER_TRIED — 启动后还没尝试过
+ - IN_PROGRESS — 当前正在请求中（避免并发）
+ - SUCCESS — 领取成功
+ - ALREADY_CLAIMED — 服务端返回 20002（今日已领）
+ - FAILED — 其他失败（网络错误、签名错误等）
+*/
     public enum ClaimStatus {
         NEVER_TRIED,
         IN_PROGRESS,
@@ -50,14 +49,13 @@ public final class KuGouVipApi {
     private KuGouVipApi() {}
 
     /**
-     * 领取酷狗"概念版"每日 VIP。
-     * <p>
-     * 调用 kugouvip.kugou.com /v1/youth_day_vip/recv_vip_listen_song。
-     *
-     * @param kugouId     酷狗 userid
-     * @param receiveDay  领取日期，格式 yyyy-MM-dd；传 null 时回退到 LocalDate.now()
-     * @return true=本次真正领到了新 VIP；false=失败、已领过、参数错误等
-     */
+ 领取酷狗"概念版"每日 VIP。
+ 调用 kugouvip.kugou.com /v1/youth_day_vip/recv_vip_listen_song。
+
+ @param kugouId 酷狗 userid
+ @param receiveDay 领取日期，格式 yyyy-MM-dd；传 null 时回退到 LocalDate.now()
+ @return true=本次真正领到了新 VIP；false=失败、已领过、参数错误等
+*/
     public static CompletableFuture<Boolean> receiveDailyVip(String kugouId, String receiveDay) {
         // Java 要求 lambda 引用的本地变量是 effectively final，所以用单元素数组绕过。
         final String[] dayRef = { receiveDay };
@@ -95,7 +93,7 @@ public final class KuGouVipApi {
                 params.put("dfid", KuGouConfig.dfid);
                 params.put("mid", KuGouConfig.mid);
                 params.put("uuid", "-");
-                // token/userid 必须放 URL params 参与签名(参照 KuGou useAxios 的 defaultParams)
+                // token/userid 必须放 URL params 参与签名
                 if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
                     params.put("token", KuGouConfig.token);
                 }
@@ -131,7 +129,7 @@ public final class KuGouVipApi {
                 int errorCode = root.has("error_code") ? root.get("error_code").getAsInt() : 0;
 
                 if (status == 1) {
-                    lastVipResultMessage = "VIP领取成功！";
+                    lastVipResultMessage = Component.translatable("netmusic_kugou.vip.claim_success").getString();
                     KuGouLogger.info("[NetMusicKuGou] Receive daily VIP: success");
                     lastClaimStatus = ClaimStatus.SUCCESS;
                     markAttemptedToday();
@@ -142,7 +140,7 @@ public final class KuGouVipApi {
                 // error_code=20002 = 错误请求格式
                 if (errorCode == 131001 || errorCode == 20002) {
                     java.time.LocalDate tomorrow = LocalDate.now().plusDays(1);
-                    lastVipResultMessage = "今日VIP领取已达上限，将于 " + tomorrow + " 00:00 后重置";
+                    lastVipResultMessage = Component.translatable("netmusic_kugou.vip.daily_limit", tomorrow).getString();
                     KuGouLogger.info("[NetMusicKuGou] Receive daily VIP: daily limit reached ({})", errorCode);
                     lastClaimStatus = ClaimStatus.ALREADY_CLAIMED;
                     markAttemptedToday();
@@ -150,7 +148,7 @@ public final class KuGouVipApi {
                 }
 
                 // ❌ 其他失败 - 使用错误码解释器
-                // KuGouErrorCode.getFullMessage 已自带 "错误码 XXXX: <描述>"，不要再加前缀
+                // KuGouErrorCode.getFullMessage 已自带 "错误码 XXXX: "，不要再加前缀
                 lastVipResultMessage = KuGouErrorCode.getFullMessage(errorCode);
                 KuGouLogger.warn("[NetMusicKuGou] Receive daily VIP: {} (status={}, errcode={})",
                         lastVipResultMessage, status, errorCode);
@@ -190,7 +188,7 @@ public final class KuGouVipApi {
                 params.put("dfid", KuGouConfig.dfid);
                 params.put("mid", KuGouConfig.mid);
                 params.put("uuid", "-");
-                // token/userid 必须放 URL params 参与签名(参照 KuGou useAxios 的 defaultParams)
+                // token/userid 必须放 URL params 参与签名
                 if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
                     params.put("token", KuGouConfig.token);
                 }
@@ -225,8 +223,8 @@ public final class KuGouVipApi {
                 // error_code=20002 = 错误请求格式
                 if (status == 1 || errorCode == 297002) {
                     lastVipResultMessage = (status == 1)
-                            ? "VIP升级成功！"
-                            : "VIP升级今日已生效";
+                            ? Component.translatable("netmusic_kugou.vip.upgrade_success").getString()
+                            : Component.translatable("netmusic_kugou.vip.upgrade_effective").getString();
                     KuGouLogger.info("[NetMusicKuGou] Upgrade VIP: success (status={}, errcode={})", status, errorCode);
                     lastClaimStatus = ClaimStatus.SUCCESS;
                     markAttemptedToday();
@@ -234,7 +232,7 @@ public final class KuGouVipApi {
                 }
 
                 // ❌ 其他失败 - 使用错误码解释器
-                // KuGouErrorCode.getFullMessage 已自带 "错误码 XXXX: <描述>"，不要再加前缀
+                // KuGouErrorCode.getFullMessage 已自带 "错误码 XXXX: "，不要再加前缀
                 lastVipResultMessage = KuGouErrorCode.getFullMessage(errorCode);
                 KuGouLogger.warn("[NetMusicKuGou] Upgrade VIP reward: {} (status={}, errcode={})",
                         lastVipResultMessage, status, errorCode);
@@ -247,16 +245,13 @@ public final class KuGouVipApi {
     }
 
     /**
-     * 判断今天是否还需要再尝试一次。
-     * <p>
-     * 策略（对齐 KuGou 的"每次都问 server"思路 —— 不靠本地 20002 拦截）：
-     * <ul>
-     *   <li>如果今天还没成功领取（SUCCESS）→ 继续重试</li>
-     *   <li>如果今天已经 SUCCESS → 不再发请求（避免对 server 造成无意义压力）</li>
-     *   <li>如果是其他状态（NEVER_TRIED / IN_PROGRESS / FAILED / ALREADY_CLAIMED）→ 都允许再试，
-     *       这样 24h 周期过了之后才能及时再领</li>
-     * </ul>
-     */
+ 判断今天是否还需要再尝试一次。
+ 策略（每次都问 server，不靠本地 20002 拦截）：
+ - 如果今天还没成功领取（SUCCESS）→ 继续重试
+ - 如果今天已经 SUCCESS → 不再发请求（避免对 server 造成无意义压力）
+ - 如果是其他状态（NEVER_TRIED / IN_PROGRESS / FAILED / ALREADY_CLAIMED）→ 都允许再试，
+ 这样 24h 周期过了之后才能及时再领
+*/
     public static boolean shouldRetryToday() {
         String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         if (!today.equals(lastClaimDate)) {
@@ -274,14 +269,13 @@ public final class KuGouVipApi {
     }
 
     /**
-     * 解析酷狗 server 返回的时间戳为北京时间日期字符串 yyyy-MM-dd。
-     * <p>
-     * KuGou 实现（user.ts:289-325）：把 server 时间戳 + 8 小时（UTC+8 北京时区）偏移再格式化。
-     * 如果 server 调用失败，本地 fallback + 8 小时偏移。
-     *
-     * @param serverTimeMs server_now 接口返回的毫秒时间戳，<=0 表示获取失败
-     * @return "yyyy-MM-dd" 格式的日期
-     */
+ 解析酷狗 server 返回的时间戳为北京时间日期字符串 yyyy-MM-dd。
+ 把 server 时间戳 + 8 小时（UTC+8 北京时区）偏移再格式化。
+ 如果 server 调用失败，本地 fallback + 8 小时偏移。
+
+ @param serverTimeMs server_now 接口返回的毫秒时间戳，<=0 表示获取失败
+ @return "yyyy-MM-dd" 格式的日期
+*/
     public static String toBeijingDateString(long serverTimeMs) {
         long baseMs = serverTimeMs > 0 ? serverTimeMs : System.currentTimeMillis();
         long beijingMs = baseMs + 8L * 3600 * 1000;
