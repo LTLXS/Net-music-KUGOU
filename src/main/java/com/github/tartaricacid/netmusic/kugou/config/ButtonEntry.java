@@ -1,9 +1,8 @@
 package com.github.tartaricacid.netmusic.kugou.config;
 
 import me.shedaniel.clothconfig2.gui.entries.TooltipListEntry;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.narration.NarratableEntry;
 import net.minecraft.network.chat.Component;
@@ -21,21 +20,19 @@ public class ButtonEntry extends TooltipListEntry<Void> {
 
     private static final int BUTTON_WIDTH = 100;
     private static final int BUTTON_HEIGHT = 20;
-    private static final int BUTTON_BG = 0xFF555555;
-    private static final int BUTTON_BG_HOVER = 0xFF888888;
-    private static final int BUTTON_OUTLINE = 0xFFAAAAAA;
-    private static final int TEXT_COLOR = 0xFFFFFFFF;
 
-    private final Component buttonText;
     private final Runnable onClick;
+    private final Button buttonWidget;
 
     private int lastX, lastY, lastEntryWidth, lastEntryHeight;
 
     public ButtonEntry(Component fieldName, Component buttonText, Runnable onClick,
                        @Nullable Supplier<Optional<Component[]>> tooltipSupplier) {
         super(fieldName, tooltipSupplier, false);
-        this.buttonText = buttonText;
         this.onClick = onClick;
+        this.buttonWidget = Button.builder(buttonText, b -> onClick.run())
+                .bounds(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT)
+                .build();
     }
 
     @Override
@@ -52,22 +49,9 @@ public class ButtonEntry extends TooltipListEntry<Void> {
         int bx = x + entryWidth - BUTTON_WIDTH - 2;
         int by = y + (entryHeight - BUTTON_HEIGHT) / 2;
 
-        boolean hovered = mouseX >= bx && mouseX < bx + BUTTON_WIDTH
-                && mouseY >= by && mouseY < by + BUTTON_HEIGHT;
-
-        graphics.fill(bx, by, bx + BUTTON_WIDTH, by + BUTTON_HEIGHT, hovered ? BUTTON_BG_HOVER : BUTTON_BG);
-
-        graphics.fill(bx, by, bx + BUTTON_WIDTH, by + 1, BUTTON_OUTLINE);
-        graphics.fill(bx, by + BUTTON_HEIGHT - 1, bx + BUTTON_WIDTH, by + BUTTON_HEIGHT, BUTTON_OUTLINE);
-        graphics.fill(bx, by, bx + 1, by + BUTTON_HEIGHT, BUTTON_OUTLINE);
-        graphics.fill(bx + BUTTON_WIDTH - 1, by, bx + BUTTON_WIDTH, by + BUTTON_HEIGHT, BUTTON_OUTLINE);
-
-        Font font = Minecraft.getInstance().font;
-        int textWidth = font.width(buttonText);
-        graphics.drawString(font, buttonText,
-                bx + (BUTTON_WIDTH - textWidth) / 2,
-                by + (BUTTON_HEIGHT - 8) / 2,
-                TEXT_COLOR);
+        buttonWidget.setX(bx);
+        buttonWidget.setY(by);
+        buttonWidget.render(graphics, mouseX, mouseY, delta);
     }
 
     @Override
@@ -75,11 +59,9 @@ public class ButtonEntry extends TooltipListEntry<Void> {
         if (isMouseInside((int) mouseX, (int) mouseY, lastX, lastY, lastEntryWidth, lastEntryHeight)) {
             int bx = lastX + lastEntryWidth - BUTTON_WIDTH - 2;
             int by = lastY + (lastEntryHeight - BUTTON_HEIGHT) / 2;
-            if (mouseX >= bx && mouseX < bx + BUTTON_WIDTH
-                    && mouseY >= by && mouseY < by + BUTTON_HEIGHT) {
-                onClick.run();
-                return true;
-            }
+            buttonWidget.setX(bx);
+            buttonWidget.setY(by);
+            return buttonWidget.mouseClicked(mouseX, mouseY, button);
         }
         return super.mouseClicked(mouseX, mouseY, button);
     }
@@ -110,12 +92,12 @@ public class ButtonEntry extends TooltipListEntry<Void> {
 
     @Override
     public List<? extends GuiEventListener> children() {
-        return Collections.emptyList();
+        return Collections.singletonList(buttonWidget);
     }
 
     @Override
     public List<? extends NarratableEntry> narratables() {
-        return Collections.emptyList();
+        return Collections.singletonList(buttonWidget);
     }
 
     public static ButtonEntry of(Component fieldName, Component buttonText, Runnable onClick) {

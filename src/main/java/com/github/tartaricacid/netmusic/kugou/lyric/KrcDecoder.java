@@ -9,10 +9,9 @@ import java.util.zip.Inflater;
 import java.util.regex.Pattern;
 
 /**
- * KRC 酷狗私有二进制歌词格式解码器。
- * <p>
- * 流程：跳过 4 字节 "krc1" 魔数头 → 16 字节密钥循环 XOR → zlib 解压 → 剥除逐字标签得到 LRC。
- */
+ KRC 酷狗私有二进制歌词格式解码器。
+ 流程：跳过 4 字节 "krc1" 魔数头 → 16 字节密钥循环 XOR → zlib 解压 → 剥除逐字标签得到 LRC。
+*/
 public final class KrcDecoder {
 
     private static final byte[] DECRYPT_KEY = {
@@ -26,11 +25,11 @@ public final class KrcDecoder {
     private static final Pattern PAREN_PATTERN = Pattern.compile("\\([^)]*\\)");
 
     /**
-     * 把 KRC base64 字符串解码为 LRC 文本。
-     *
-     * @param krcBase64 酷狗 /download 返回的 content 字段
-     * @return 标准 LRC 文本，失败返回 {@code null}
-     */
+ 把 KRC base64 字符串解码为 LRC 文本。
+
+ @param krcBase64 酷狗 /download 返回的 content 字段
+ @return 标准 LRC 文本，失败返回 null
+*/
     public static String decodeToLrc(String krcBase64) {
         if (krcBase64 == null || krcBase64.isEmpty()) {
             return null;
@@ -92,8 +91,8 @@ public final class KrcDecoder {
     }
 
     /**
-     * 剥除 KRC 逐字标签 {@code <...>} 和 {@code (offset,len)} 字标签，保留 {@code [mm:ss.fff]} 时间标签。
-     */
+ 剥除 KRC 逐字标签 和 (offset,len) 字标签，保留 [mm:ss.fff] 时间标签。
+*/
     private static String stripKrcTags(String krcText) {
         if (krcText.isEmpty()) {
             return "";

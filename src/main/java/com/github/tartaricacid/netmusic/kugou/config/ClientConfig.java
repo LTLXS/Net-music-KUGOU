@@ -7,9 +7,11 @@ public class ClientConfig {
     public static final ForgeConfigSpec SPEC;
 
     public static final ForgeConfigSpec.ConfigValue<String> PROVIDER;
-    public static final ForgeConfigSpec.ConfigValue<String> VIP_COOKIE;
 
     public static final ForgeConfigSpec.ConfigValue<String> AUDIO_QUALITY;
+
+    // 蝰蛇母带（viper_tape）需要转码才能播放，默认关闭
+    public static final ForgeConfigSpec.BooleanValue VIPER_TAPE_ENABLED;
 
     public static final ForgeConfigSpec.BooleanValue AUTO_RECEIVE_VIP;
 
@@ -23,6 +25,10 @@ public class ClientConfig {
     public static final ForgeConfigSpec.BooleanValue LYRIC_SHOW_TRANSLATION;
     public static final ForgeConfigSpec.BooleanValue LYRIC_SHOW_ROMAJI;
 
+    // 歌曲音频磁盘缓存（首次播放落盘，之后读盘）
+    public static final ForgeConfigSpec.BooleanValue CACHE_ENABLED;
+    public static final ForgeConfigSpec.LongValue CACHE_MAX_MB;
+
     static {
         BUILDER.push("music_source");
 
@@ -30,17 +36,18 @@ public class ClientConfig {
                 .comment("Music provider: NETEASE or KUGOU")
                 .define("provider", "NETEASE");
 
-        VIP_COOKIE = BUILDER
-                .comment("VIP cookie for premium songs")
-                .define("vipCookie", "");
-
         BUILDER.pop();
 
         BUILDER.push("audio_quality");
 
         AUDIO_QUALITY = BUILDER
-                .comment("Audio quality: 128, 320, flac, high, super")
+                .comment("Audio quality: 128, 320, flac, high, viper_tape, super")
                 .define("quality", "320");
+
+        VIPER_TAPE_ENABLED = BUILDER
+                .comment("Enable viper_tape (master tape) quality. It needs transcoding and may not play directly; "
+                        + "when disabled, a viper_tape selection falls back to high (Hi-Res).")
+                .define("viperTapeEnabled", false);
 
         BUILDER.pop();
 
@@ -92,6 +99,20 @@ public class ClientConfig {
 
         BUILDER.pop();
 
+        BUILDER.push("cache");
+
+        CACHE_ENABLED = BUILDER
+                .comment("Enable local song audio disk cache: first play writes the mp3 to disk, "
+                        + "replays read from disk (saves bandwidth and avoids KuGou CDN 403风控).")
+                .define("enabled", true);
+
+        CACHE_MAX_MB = BUILDER
+                .comment("Max disk cache size in MB. 0 = unlimited. "
+                        + "When exceeded, the least-recently-played songs are evicted first.")
+                .defineInRange("maxMb", 2048L, 0L, 8192L);
+
+        BUILDER.pop();
+
         SPEC = BUILDER.build();
     }
 
@@ -121,12 +142,35 @@ public class ClientConfig {
         PROVIDER.set(provider.name());
     }
 
-    public static String getVipCookie() {
-        return VIP_COOKIE.get();
+    public static boolean isViperTapeEnabled() {
+        try {
+            Boolean v = VIPER_TAPE_ENABLED.get();
+            return v != null && v;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     public static AudioQuality getAudioQuality() {
-        return AudioQuality.fromValue(AUDIO_QUALITY.get());
+        AudioQuality q = AudioQuality.fromValue(AUDIO_QUALITY.get());
+        // 未开启母带时降级为 Hi-Res
+        if (q.needsOptIn() && !isViperTapeEnabled()) {
+            return AudioQuality.HIGH;
+        }
+        return q;
+    }
+
+    /** 配置界面可选音质列表（未开启时隐藏母带） */
+    public static AudioQuality[] getSelectableAudioQualities() {
+        AudioQuality[] all = AudioQuality.values();
+        if (isViperTapeEnabled()) {
+            return all;
+        }
+        java.util.List<AudioQuality> list = new java.util.ArrayList<>();
+        for (AudioQuality q : all) {
+            if (!q.needsOptIn()) list.add(q);
+        }
+        return list.toArray(new AudioQuality[0]);
     }
 
     public static void setAudioQuality(AudioQuality quality) {

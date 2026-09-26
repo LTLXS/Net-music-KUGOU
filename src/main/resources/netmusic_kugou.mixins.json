@@ -8,7 +8,8 @@
   "mixins": [
     "CDBurnerMenuMixin",
     "MaidMusicToClientMessageShowLyricMixin",
-    "TileEntityMusicPlayerSetPlayMixin"
+    "TileEntityMusicPlayerSetPlayMixin",
+    "ItemStackCdStackMixin"
   ],
   "client": [
     "CDBurnerMenuScreenMixin",

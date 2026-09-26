@@ -405,7 +405,6 @@ public abstract class CDBurnerMenuScreenMixin extends AbstractContainerScreen<Ab
     private void netmusickugou$handleCraftButton(CallbackInfo ci) {
         if (ClientConfig.getProvider() != ProviderType.KUGOU || this.netmusickugou$lastKuGouResult == null) {
             // 冲突规避：装了网络音乐机时，保留酷狗按钮（否则无法搜索酷狗），
-            // 仅在选了酷狗源、但输入槽是普通 CD（非「音乐列表」物品）时给个烧多首的提示。
             if (NetMusicListCompat.isNetMusicListLoaded() && ClientConfig.getProvider() == ProviderType.KUGOU) {
                 ItemStack in = this.getMenu().getSlot(0).getItem();
                 if (in != null && !in.isEmpty() && !NetMusicListCompat.isMusicListItem(in)) {

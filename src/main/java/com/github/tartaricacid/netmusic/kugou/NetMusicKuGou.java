@@ -4,6 +4,7 @@ import com.github.tartaricacid.netmusic.kugou.audio.AudioStreamHandlerInjector;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouVipApi;
 import com.github.tartaricacid.netmusic.kugou.config.ClientConfig;
+import com.github.tartaricacid.netmusic.kugou.config.ServerConfig;
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfig;
 import com.github.tartaricacid.netmusic.kugou.config.KuGouConfigScreen;
 import com.github.tartaricacid.netmusic.kugou.network.NetworkHandler;
@@ -54,16 +55,14 @@ import java.nio.file.Path;
 import java.util.UUID;
 
 /**
- * 酷狗音乐源插件主入口（Forge 1.20.1）。
- * <p>本类只负责装配：注册配置/网络/事件，并把具体职责转发给各自的组件类：
- * <ul>
- *   <li>{@link KuGouConfigScreen} —— Cloth Config 配置界面</li>
- *   <li>{@link LoginStateManager} —— 登录态持久化</li>
- *   <li>{@link AudioStreamHandlerInjector} —— 酷狗音频处理器反射注入</li>
- *   <li>{@link CdReplayHelper} —— CD URL 续期回写 / 延迟重播</li>
- *   <li>{@link VipRetryScheduler} / {@link UrlRefreshScheduler} —— 周期任务调度</li>
- * </ul>
- */
+ 酷狗音乐源插件主入口（Forge 1.20.1）。
+ 本类只负责装配：注册配置/网络/事件，并把具体职责转发给各自的组件类：
+ - KuGouConfigScreen —— Cloth Config 配置界面
+ - LoginStateManager —— 登录态持久化
+ - AudioStreamHandlerInjector —— 酷狗音频处理器反射注入
+ - CdReplayHelper —— CD URL 续期回写 / 延迟重播
+ - VipRetryScheduler / UrlRefreshScheduler —— 周期任务调度
+*/
 @Mod(NetMusicKuGou.MOD_ID)
 public class NetMusicKuGou {
     public static final String MOD_ID = "netmusic_kugou";
@@ -81,6 +80,12 @@ public class NetMusicKuGou {
         }
 
         ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, ClientConfig.SPEC, "NETMUSICCANNEEDKUGOU/netmusic-kugou-client.toml");
+        // 注意：必须用 COMMON 而非 SERVER 类型。
+        // SERVER 类型 config 在客户端主菜单/登录界面/配置界面（尚未启动 integrated server）时不会被加载，
+        // 其 ConfigValue.config 为 null，此时调用 set() 会抛 NPE（"Cannot set config value without assigned Config object present"）。
+        // 该崩溃曾出现在 KuGouLoginScreen.finishLogin 与 KuGouConfigScreen 保存按钮。
+        // COMMON 类型在客户端与服务器两侧都会尽早加载，配置界面与登录流程可安全读写，专用服务器也仍可用。
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, ServerConfig.SPEC, "NETMUSICCANNEEDKUGOU/netmusic-kugou-server.toml");
 
         CHANNEL = NetworkRegistry.ChannelBuilder
                 .named(new ResourceLocation(MOD_ID, "channel"))
@@ -99,8 +104,14 @@ public class NetMusicKuGou {
             // 注意：必须在父模组的 AudioStreamHandlerManager.init() 之后调用 inject()，
             // 否则会把 HANDLERS 提前变成 ImmutableList，导致父模组的 init() 排序时崩。
             // onClientLoggingIn 在玩家登录世界时触发，远晚于 FMLClientSetupEvent，完美满足时序要求。
-            MinecraftForge.EVENT_BUS.register(NetMusicKuGou.class);
         }
+
+        // 适配专用服务器(dedicated server)：Forge 事件总线必须两侧都注册。
+        // 否则专用服务器上 onServerStarted / onPlayerLoggedIn / onRightClickJukebox /
+        // onServerStopped / onServerStopping 这些服务端事件永远不会被注册，
+        // 导致 CD URL 续期 / 预取逻辑在专用服务器上完全失效。
+        // 这些服务端方法内部已用 isClient() / 配置开关 / isLoggedIn() 做了安全守卫，不会触碰任何客户端 API。
+        MinecraftForge.EVENT_BUS.register(NetMusicKuGou.class);
     }
 
     private void clientSetup(FMLClientSetupEvent event) {
@@ -115,6 +126,8 @@ public class NetMusicKuGou {
 
     private void setup(FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
+            // 应用配置里的日志级别（setup 在配置加载之后才执行，此时读取不会再抛 "before config is loaded"）
+            KuGouLogger.setLevel(ServerConfig.getLogLevel());
             LoginStateManager.loadState();
             KuGouPrefetch.setOnRefreshChangedCallback(
                     (level, pos, oldUrl, newUrl) -> CdReplayHelper.scheduleReplayWithNewUrl(level, pos, oldUrl, newUrl));
@@ -158,7 +171,24 @@ public class NetMusicKuGou {
 
     @SubscribeEvent
     public static void onServerStarted(ServerStartedEvent event) {
+        // 专用服务器适配：若服务端配置了 VIP Cookie，则将其解析为酷狗登录态，
+        // 使 CD URL 续期 / 预取在专用服务器上也能运行（无需客户端扫码登录）。
+        applyServerVipCookie();
         UrlRefreshScheduler.start();
+    }
+
+    /**
+ 把服务端配置的 VIP Cookie 应用到 KuGouConfig 登录态。
+ 专用服务器没有客户端扫码流程，因此通过配置文件里的 cookie 来"登录"。
+*/
+    private static void applyServerVipCookie() {
+        String cookie = ServerConfig.getVipCookie();
+        if (cookie == null || cookie.isBlank()) {
+            return;
+        }
+        KuGouConfig.applyCookieString(cookie);
+        LoginStateManager.saveState();
+        KuGouLogger.info("Applied server-side VIP Cookie. Logged in: {}", KuGouConfig.isLoggedIn());
     }
 
     @SubscribeEvent

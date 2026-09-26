@@ -135,7 +135,7 @@ public final class KuGouDeviceRegister {
     private static String parseUid(String userid) {
         if (userid == null || userid.isEmpty()) return "0";
         try {
-            Long.parseLong(userid); // 验证是数字
+            Long.parseLong(userid);
             return userid;
         } catch (NumberFormatException e) {
             return "0";
@@ -283,6 +283,23 @@ public final class KuGouDeviceRegister {
         StringBuilder hex = new StringBuilder();
         for (byte b : encrypted) hex.append(String.format("%02x", b));
         return new AesEncryptResult(rawKey, hex.toString());
+    }
+
+    /**
+ 用显式 key / iv 做 AES-CBC 加密，输出小写 hex。
+ 第三方登录（QQ / 微信）的 t1 / t2 字段使用固定 key/iv，不能用 aesEncrypt。
+*/
+    public static String aesEncryptWithKey(String data, String key, String iv) throws Exception {
+        SecretKeySpec keySpec = new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "AES");
+        IvParameterSpec ivSpec = new IvParameterSpec(iv.getBytes(StandardCharsets.UTF_8));
+
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec);
+        byte[] encrypted = cipher.doFinal(data.getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder hex = new StringBuilder();
+        for (byte b : encrypted) hex.append(String.format("%02x", b));
+        return hex.toString();
     }
 
     public static String aesDecrypt(String hexData, String rawKey) throws Exception {

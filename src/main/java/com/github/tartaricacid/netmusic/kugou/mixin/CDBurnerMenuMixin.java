@@ -16,12 +16,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 服务端 Mixin：在父模组 {@link CDBurnerMenu#setSongInfo} 刻录完成后，
- * 从 {@link BurnDataCache} 取出 fileHash/albumId/歌词，同步写入 CD NBT。
- * <p>
- * 歌词由客户端在刻录时并行拉取，通过 BurnDataCache 传递到服务端，
- * 刻录完成时 CD 上已带有歌词，播放时无需等待。
- */
+ 服务端 Mixin：在父模组 setSongInfo 刻录完成后，
+ 从 BurnDataCache 取出 fileHash/albumId/歌词，同步写入 CD NBT。
+ 歌词由客户端在刻录时并行拉取，通过 BurnDataCache 传递到服务端，
+ 刻录完成时 CD 上已带有歌词，播放时无需等待。
+*/
 @Mixin(value = CDBurnerMenu.class, remap = false)
 public class CDBurnerMenuMixin {
 
@@ -45,7 +44,6 @@ public class CDBurnerMenuMixin {
 
             CdNbtHelper.writeOriginalInfo(cd, fileHash, albumId);
 
-            // 逐曲写入：把酷狗元数据按 songUrl 索引进 CD。
             // 列表CD（netMusicList 的「音乐列表」物品）可含多首酷狗歌，逐曲存储互不覆盖；
             // 普通 CD 也写入一份，播放时优先按 url 取回、回退顶层，行为一致。
             try {

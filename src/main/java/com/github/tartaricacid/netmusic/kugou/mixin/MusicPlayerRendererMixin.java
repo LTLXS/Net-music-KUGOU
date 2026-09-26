@@ -31,13 +31,12 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Mixin 到父模组 {@code MusicPlayerRenderer.renderLyric}，把渲染从 2 行（原文 + 翻译）
- * 扩展到最多 3 行（原文 + 翻译 + 罗马音），行数由 {@link ClientConfig#LYRIC_SHOW_TRANSLATION}
- * 和 {@link ClientConfig#LYRIC_SHOW_ROMAJI} 控制。
- * <p>
- * 父模组"停止播放就清空 lyricRecord"的位置我们同步清空
- * {@link BlockRomajiRegistry}，避免侧通道无限增长。
- */
+ Mixin 到父模组 MusicPlayerRenderer.renderLyric，把渲染从 2 行（原文 + 翻译）
+ 扩展到最多 3 行（原文 + 翻译 + 罗马音），行数由 LYRIC_SHOW_TRANSLATION
+ 和 LYRIC_SHOW_ROMAJI 控制。
+ 父模组"停止播放就清空 lyricRecord"的位置我们同步清空
+ BlockRomajiRegistry，避免侧通道无限增长。
+*/
 @Mixin(value = MusicPlayerRenderer.class, remap = false)
 public abstract class MusicPlayerRendererMixin {
 
@@ -48,10 +47,10 @@ public abstract class MusicPlayerRendererMixin {
     private BlockEntityRenderDispatcher dispatcher;
 
     /**
-     * @author KuGouAddon
-     * @reason 把父模组的"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行，
-     *         行数由 ClientConfig 控制。
-     */
+ @author KuGouAddon
+ @reason 把父模组的"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行，
+ 行数由 ClientConfig 控制。
+*/
     @Overwrite(remap = false)
     private void renderLyric(TileEntityMusicPlayer te, PoseStack poseStack,
                               MultiBufferSource bufferIn, int combinedLightIn) {
@@ -208,7 +207,6 @@ public abstract class MusicPlayerRendererMixin {
         com.mojang.blaze3d.systems.RenderSystem.enableCull();
     }
 
-    /** 当前播放进度（已播放 tick）= 总时长 - 剩余时间。歌词 map 的 key 即 tick 偏移。 */
     private static int currentPlayTick(TileEntityMusicPlayer te) {
         int remain = te.getCurrentTime();
         try {
@@ -227,6 +225,32 @@ public abstract class MusicPlayerRendererMixin {
         }
         return 0;
     }
+
+
+/*
+           ....:::--==++**#%%%.          -%%+:        :=======================================      
+       #@@@@@@@@@@@@@@@@@@@@@@*        -#@@@@@%=      +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@.     
+       =@@@@@@@@@@@@@@@@@@@@@@@.     =#@@@@@@@#:      +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@.     
+       .@@%%%%%#####**++==+=-..   :*@@@@@@@@#-        .----==---------%@@@@@@*:-:::::--%@@@@@@      
+        :-=+=  -+*#%#    :@%##*+*%@@@@@@@@#:               %%%#**-    *@@@@@@#=========@@@@@@=      
+       =@@@@@= :@@@@@#   %@@@@@-#@@@@@@%+:                *@@@@@@:    #@@@@@@@@@@@@@@@@@-:=++       
+        #@@@@@- -@@@@@# *@@@@@:  -@@@*-   :#@+.          +@@@@@@@*-.  *@@@@@@#==========            
+         %@@@@@: =%#*=-+@@@@@-    .-    :*@@@@@#-       *@@@@@@@@@@@%#@@@@@@@#==========++++***=    
+         :#*=-. :+*+====:=+#-         -#@@@@@@@@=     =%@@@@@@##@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@:    
+       .::::..::*@@@@@@#...::::    :+%@@@@@@@%=     :%@@@@@@@=  .-+#%%@%@@@@@@@@@@@@@@@@@@@@@@*     
+       =@@@@@@@@@@@@@@@@@@@@@@@::+%@@@@@@@@%=        .+%@@@*.         .*******-...............      
+       =@@@@@@@@@@@@@@@@@@@@@@@:%@@@@@@@@#-             -%@**########*#@@@@@@@#************:        
+       -%#%%##@@@@@@@@@@#####%#  =@@@@#=.   =*:          +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@=        
+             +@@@@@@@@@* ++:      .*=.    :#@@@%=.       +@@@@@@+:::::-@@@@@@@=:::::*@@@@@@=        
+           -%@@@@@@@@@@%@@@@%=          :#@@@@@@@%.      +@@@@@@*-===-=@@@@@@@+-=-=-*@@@@@@=        
+         -#@@@@@@@@@@@@@@@@@@@@*:    .=%@@@@@@@@+        +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@=        
+      :+%@@@@@@@#@@@@@@*=%@@@@@#. .-*@@@@@@@@@*.         -*************@@@@@@@#*****%@@@@@#:        
+      *@@@@@@@#.-@@@@@@*  =%@%=.=#@@@@@@@@@@+.                        .@@@@@@@-    -%@@@@@%-        
+       :%@@@#-  =@@@@@@*    -.*@@@@@@@@@@%=.          #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@%-      
+         +#:    =@@@@@@*      .+@@@@@@%+:             +@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@#.    
+                =@@@@@@*        :%@%+:                :%%#######*****++++++=====-------:-%@@#=:     
+                 .......          .                                                       -.        
+*/
 
     private static final Set<String> MIRROR_EGG_KEYWORDS = Set.of(
             "アンノウン", "unknown mother", "unknownmothergoose",
@@ -258,11 +282,6 @@ public abstract class MusicPlayerRendererMixin {
         return false;
     }
 
-    /**
-     * 彩蛋（镜像歌词交换）状态：原先是全局静态字段，多个音乐盒同时播放 / 切换歌曲时
-     * 会互相污染。改为按方块坐标（每个音乐盒）独立保存。
-     * 数组 [lastSeenTick, occurCount, lastOccurLyricTick, swapFiredTick]，初始 [-1,0,-1,-1]。
-     */
     private static final ConcurrentHashMap<BlockPos, int[]> EGG_SWAP_STATE = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<BlockPos, String> EGG_SONG_BY_POS = new ConcurrentHashMap<>();
 
@@ -306,10 +325,10 @@ public abstract class MusicPlayerRendererMixin {
     }
 
     /**
-     * 用镜像 buffer 绘制一行文字（水平翻转）。镜像 buffer 在顶点层面把 x 取反，
-     * 因此文字会绕 x=0 水平镜像，且不再依赖 PoseStack 上的 scale(-1,1,1)，
-     * 从而不会与基础 scale(-0.025, -0.025, 0.025) 抵消、也不会"钉"在相机旋转的一侧。
-     */
+ 用镜像 buffer 绘制一行文字（水平翻转）。镜像 buffer 在顶点层面把 x 取反，
+ 因此文字会绕 x=0 水平镜像，且不再依赖 PoseStack 上的 scale(-1,1,1)，
+ 从而不会与基础 scale(-0.025, -0.025, 0.025) 抵消、也不会"钉"在相机旋转的一侧。
+*/
     private void drawMirrored(Component text, float y, int color, Font.DisplayMode mode,
                               MultiBufferSource mirrorSrc, PoseStack poseStack,
                               int combinedLightIn, int bgColor) {

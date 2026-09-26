@@ -5,6 +5,7 @@ import com.github.tartaricacid.netmusic.item.ItemMusicCD;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.NetMusicKuGou;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouApiClient;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.BlockRomajiRegistry;
 import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.lyric.LyricInjectCache;
@@ -26,16 +27,14 @@ import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 父模组 {@code MusicToClientMessage.onHandle} 只为网易云 rawUrl 拉歌词，酷狗的没处理。
- * 本 Mixin 在 {@code onHandle} 入口从 CD 物品 NBT 读 LRC 文本 + 翻译 JSON 并解析，
- * 结果存到 {@link LyricInjectCache} 供 {@link NetMusicSoundMixin} 在构造器尾部取用；
- * 罗马音则存到 {@link BlockRomajiRegistry} 侧通道供 {@code MusicPlayerRendererMixin} 读。
- * <p>
- * 父模组的 {@code MusicPlayerRenderer.renderLyric} 已经支持双行渲染（原文 + 翻译），
- * 我们只需要把翻译数据也填进 {@code LyricRecord.transLyrics} 即可。
- * <p>
- * 罗马音因为 {@code LyricRecord} 字段限制塞不进去，单独走侧通道。
- */
+ 父模组 MusicToClientMessage.onHandle 只为网易云 rawUrl 拉歌词，酷狗的没处理。
+ 本 Mixin 在 onHandle 入口从 CD 物品 NBT 读 LRC 文本 + 翻译 JSON 并解析，
+ 结果存到 LyricInjectCache 供 NetMusicSoundMixin 在构造器尾部取用；
+ 罗马音则存到 BlockRomajiRegistry 侧通道供 MusicPlayerRendererMixin 读。
+ 父模组的 MusicPlayerRenderer.renderLyric 已经支持双行渲染（原文 + 翻译），
+ 我们只需要把翻译数据也填进 LyricRecord.transLyrics 即可。
+ 罗马音因为 LyricRecord 字段限制塞不进去，单独走侧通道。
+*/
 @Mixin(value = MusicToClientMessage.class, remap = false)
 public class MusicToClientMessageMixin {
 
@@ -73,13 +72,35 @@ public class MusicToClientMessageMixin {
             ItemStack cd = musicPlay.getPlayerInv().getStackInSlot(0);
             if (!CdNbtHelper.isMusicCd(cd)) return;
 
-            CdNbtHelper.Lyric stored = CdNbtHelper.readLyric(cd);
+            // 列表CD（netMusicList 播放列表）每首歌的歌词在 NetMusicKuGouSongs，按当前播放曲目的
+            // songUrl 取回；顶层 NetMusicKuGouCdAddon 只是烧录残留（最后一首），直接用会显示成
+            // 另一首歌的歌词。
+            ItemMusicCD.SongInfo cdInfo = ItemMusicCD.getSongInfo(cd);
+            String currentUrl = (cdInfo != null && cdInfo.songUrl != null && !cdInfo.songUrl.isEmpty())
+                    ? cdInfo.songUrl : null;
+            CdAddonData songAddon = (NetMusicListCompat.isMusicListItem(cd) && currentUrl != null)
+                    ? CdNbtHelper.getSongAddon(cd, currentUrl) : CdAddonData.EMPTY;
+            boolean useSongAddon = songAddon.hasLrc();
+
+            CdNbtHelper.Lyric stored;
+            if (useSongAddon) {
+                stored = new CdNbtHelper.Lyric(songAddon.lrc(),
+                        cdInfo != null && cdInfo.songName != null ? cdInfo.songName : songName);
+            } else {
+                stored = CdNbtHelper.readLyric(cd);
+            }
             if (stored == null || stored.lrcText == null || stored.lrcText.isEmpty()) {
-                fetchLyricOnTheFly(cd, pos, songName);
+                fetchLyricOnTheFly(cd, pos, songName,
+                        (NetMusicListCompat.isMusicListItem(cd) && songAddon.hasFileHash()) ? songAddon : null);
                 return;
             }
 
-            String transJson = CdNbtHelper.readLyricTranslation(cd);
+            String transJson;
+            if (useSongAddon) {
+                transJson = songAddon.lrcTrans();
+            } else {
+                transJson = CdNbtHelper.readLyricTranslation(cd);
+            }
 
             LrcConverter.KuGouLyricData data = LrcConverter.toLyricData(
                     stored.lrcText, transJson,
@@ -114,8 +135,8 @@ public class MusicToClientMessageMixin {
         }
     }
 
-    private static void fetchLyricOnTheFly(ItemStack cd, BlockPos pos, String songName) {
-        CdAddonData addon = CdNbtHelper.getData(cd);
+    private static void fetchLyricOnTheFly(ItemStack cd, BlockPos pos, String songName, CdAddonData override) {
+        CdAddonData addon = (override != null && override.hasFileHash()) ? override : CdNbtHelper.getData(cd);
         if (!addon.hasFileHash()) {
             KuGouLogger.warn("KuGou lyric: CD at {} has no LRC and no fileHash, cannot fetch", pos);
             return;
@@ -156,9 +177,9 @@ public class MusicToClientMessageMixin {
     }
 
     /**
-     * 歌词拉取完成后，解析并写入 LyricInjectCache + BlockRomajiRegistry + CD NBT。
-     * 必须在主线程执行（因为写 CD NBT + LyricInjectCache 都是客户端操作）。
-     */
+ 歌词拉取完成后，解析并写入 LyricInjectCache + BlockRomajiRegistry + CD NBT。
+ 必须在主线程执行（因为写 CD NBT + LyricInjectCache 都是客户端操作）。
+*/
     private static void injectLateLyric(ItemStack cd, BlockPos pos, String lrcText, String transJson, String songName) {
         Minecraft.getInstance().execute(() -> {
             try {

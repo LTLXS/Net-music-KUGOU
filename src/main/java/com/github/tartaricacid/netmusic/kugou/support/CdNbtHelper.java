@@ -158,7 +158,7 @@ public final class CdNbtHelper {
         public final String lrcText;
         public final String songName;
 
-        Lyric(String lrcText, String songName) {
+        public Lyric(String lrcText, String songName) {
             this.lrcText = lrcText;
             this.songName = songName;
         }
@@ -185,19 +185,13 @@ public final class CdNbtHelper {
     }
 
     /**
-     * 逐曲酷狗元数据列表（用于 netMusicList 的「音乐列表」物品，一张列表CD 可含多首酷狗歌）。
-     * <p>
-     * 顶层 {@code NetMusicKuGouCdAddon} 只能存「一首歌」的信息，对多曲列表 CD 会互相覆盖；
-     * 这里按每首歌的 {@code songUrl} 索引各自的 fileHash/albumId/歌词，播放时由
-     * {@link #getSongAddon(ItemStack, String)} 取回对应那首歌的元数据。
-     */
+ 逐曲酷狗元数据列表（用于 netMusicList 的「音乐列表」物品，一张列表CD 可含多首酷狗歌）。
+ 顶层 NetMusicKuGouCdAddon 只能存「一首歌」的信息，对多曲列表 CD 会互相覆盖；
+ 这里按每首歌的 songUrl 索引各自的 fileHash/albumId/歌词，播放时由
+ getSongAddon(ItemStack, String) 取回对应那首歌的元数据。
+*/
     private static final String SONGS_KEY = "NetMusicKuGouSongs";
 
-    /**
-     * 把一首歌的酷狗元数据写入（或更新）逐曲列表，按 {@code url} 去重。
-     *
-     * @param url 该歌的 {@code ItemMusicCD.SongInfo.songUrl}（酷狗真实直链，唯一标识一首歌）
-     */
     public static void appendSongAddon(ItemStack cd, String url, String fileHash, String albumId,
                                        String lrc, String lrcTrans) {
         if (!isMusicCd(cd) || url == null || url.isEmpty()) {
@@ -228,9 +222,6 @@ public final class CdNbtHelper {
         tag.put(SONGS_KEY, list);
     }
 
-    /**
-     * 按 {@code url} 取回某首歌的酷狗元数据；不存在时返回 {@link CdAddonData#EMPTY}。
-     */
     public static CdAddonData getSongAddon(ItemStack cd, String url) {
         if (!isMusicCd(cd) || url == null || url.isEmpty()) {
             return CdAddonData.EMPTY;

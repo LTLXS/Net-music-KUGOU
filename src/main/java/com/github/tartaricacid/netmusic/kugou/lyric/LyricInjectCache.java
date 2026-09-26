@@ -6,18 +6,14 @@ import net.minecraft.core.BlockPos;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 歌词注入用的跨线程缓存。
- * <p>
- * 父模组 {@code MusicToClientMessage.onHandle} 在 {@code CompletableFuture.runAsync} 的
- * 后台线程中创建 {@code NetMusicSound}，而 Mixin 注入点在调用入口（主线程），
- * 所以不能用 ThreadLocal（线程不共享），用 {@code ConcurrentHashMap<BlockPos, LyricRecord>}。
- * <p>
- * 数据流：
- * <ol>
- *   <li>{@link #set(BlockPos, LyricRecord)} — MusicToClientMessageMixin 在 onHandle 入口写入</li>
- *   <li>{@link #take(BlockPos)} — NetMusicSoundMixin 在构造器尾部读取并清除</li>
- * </ol>
- */
+ 歌词注入用的跨线程缓存。
+ 父模组 MusicToClientMessage.onHandle 在 CompletableFuture.runAsync 的
+ 后台线程中创建 NetMusicSound，而 Mixin 注入点在调用入口（主线程），
+ 所以不能用 ThreadLocal（线程不共享），用 ConcurrentHashMap。
+ 数据流：
+ - set(BlockPos, LyricRecord) — MusicToClientMessageMixin 在 onHandle 入口写入
+ - take(BlockPos) — NetMusicSoundMixin 在构造器尾部读取并清除
+*/
 public final class LyricInjectCache {
 
     private static final ConcurrentHashMap<BlockPos, LyricRecord> CACHE = new ConcurrentHashMap<>();
@@ -31,11 +27,11 @@ public final class LyricInjectCache {
     }
 
     /**
-     * 取出并清除缓存（一次性消费）。
-     *
-     * @param pos 播放位置
-     * @return 缓存的 LyricRecord，或 null（表示本次播放不需要注入歌词）
-     */
+ 取出并清除缓存（一次性消费）。
+
+ @param pos 播放位置
+ @return 缓存的 LyricRecord，或 null（表示本次播放不需要注入歌词）
+*/
     public static LyricRecord take(BlockPos pos) {
         if (pos == null) return null;
         return CACHE.remove(pos);

@@ -10,9 +10,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 控制 display 兼容 mixin 是否启用：仅当 NetMusicDisplay 模组存在时才应用，
- * 否则全部跳过（避免对未安装 NetMusicDisplay 的环境产生影响）。
- */
+ 控制 display 兼容 mixin 是否启用：仅当 NetMusicDisplay 模组存在时才应用，
+ 否则全部跳过（避免对未安装 NetMusicDisplay 的环境产生影响）。
+*/
 public class DisplayCompatMixinPlugin implements IMixinConfigPlugin {
     private static final Logger LOGGER = LogManager.getLogger("NetMusicKuGou-DisplayCompat");
     private static final String DISPLAY_LYRIC_CACHE = "com.netmusicdisplay.source.LyricCache";

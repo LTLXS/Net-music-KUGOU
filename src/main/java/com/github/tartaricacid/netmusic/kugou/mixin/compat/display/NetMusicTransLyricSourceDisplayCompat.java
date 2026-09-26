@@ -13,9 +13,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * 让 NetMusicDisplay 的"翻译歌词"展示源在播放酷狗 CD 时显示酷狗翻译。
- * 无翻译时回退到主歌词行（与 1.21.1 行为一致）。
- */
+ 让 NetMusicDisplay 的"翻译歌词"展示源在播放酷狗 CD 时显示酷狗翻译。
+ 无翻译时回退到主歌词行（与 1.21.1 行为一致）。
+*/
 @Mixin(NetMusicTransLyricSource.class)
 public class NetMusicTransLyricSourceDisplayCompat {
     @Inject(method = "provideLine", at = @At("HEAD"), remap = false, cancellable = true, require = 0)

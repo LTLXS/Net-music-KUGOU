@@ -16,9 +16,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 让 NetMusicDisplay 的"全部合一"展示源（歌名 + 主歌词 + 翻译）在播放酷狗 CD 时显示酷狗歌词。
- * 第一行为主歌词，第二行为翻译（若有）。
- */
+ 让 NetMusicDisplay 的"全部合一"展示源（歌名 + 主歌词 + 翻译）在播放酷狗 CD 时显示酷狗歌词。
+ 第一行为主歌词，第二行为翻译（若有）。
+*/
 @Mixin(NetMusicAllInOneSource.class)
 public class NetMusicAllInOneSourceDisplayCompat {
     @Inject(method = "provideText", at = @At("HEAD"), remap = false, cancellable = true, require = 0)

@@ -1,17 +1,13 @@
 package com.github.tartaricacid.netmusic.kugou.lyric;
 
 /**
- * 刻录时客户端→服务端的 fileHash / albumId / 歌词传递缓存。
- * <p>
- * 在单人游戏（集成服务器）中，客户端和服务端共享同一个 JVM，
- * 所以可以用 static 变量传递数据而无需额外的网络消息。
- * <p>
- * 数据流：
- * <ol>
- *   <li>{@link #set(String, String, String, String)} — CDBurnerMenuScreenMixin 刻录前写入（含歌词）</li>
- *   <li>{@link #take()} — CDBurnerMenuMixin (server) setSongInfo 后读取并清除</li>
- * </ol>
- */
+ 刻录时客户端→服务端的 fileHash / albumId / 歌词传递缓存。
+ 在单人游戏（集成服务器）中，客户端和服务端共享同一个 JVM，
+ 所以可以用 static 变量传递数据而无需额外的网络消息。
+ 数据流：
+ - set(String, String, String, String) — CDBurnerMenuScreenMixin 刻录前写入（含歌词）
+ - take() — CDBurnerMenuMixin (server) setSongInfo 后读取并清除
+*/
 public final class BurnDataCache {
 
     private static volatile String fileHash;

@@ -12,21 +12,11 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 在父模组 {@link NetMusicSound} 构造器尾部检查是否有 addon 注入的歌词缓存，
- * 有则替换 {@code this.lyricRecord}。
- * <p>
- * 配合 {@link MusicToClientMessageMixin} 使用：
- * <ol>
- *   <li>MusicToClientMessageMixin.@Inject(HEAD) onHandle → 读 CD NBT LRC → 解析 → 存 {@link LyricInjectCache}</li>
- *   <li>父模组 onHandle（在 CompletableFuture.runAsync 后台线程）→ new NetMusicSound(...) → 调用本构造器</li>
- *   <li>本 Mixin @Inject(TAIL) → 从 {@link LyricInjectCache} 取缓存 → 替换 this.lyricRecord</li>
- * </ol>
- * <p>
- * 注意：本 Mixin 只注入构造器尾部，<b>绝不</b>注入 {@code tick()}。
- * 因为 1.5.1 发布版的 {@code NetMusicSound} 并未 override {@code tick()}，
- * 一旦写 {@code @Inject(method="tick")} 会导致整个 Mixin 因找不到目标而 FATAL 失效，
- * 连带构造器里的歌词注入也一起丢失（表现为刻录唱片无歌词）。
- */
+ 在父模组 NetMusicSound 构造器尾部检查是否有 addon 注入的歌词缓存，有则替换 this.lyricRecord。
+ 配合 MusicToClientMessageMixin：onHandle(HEAD) 解析 CD NBT LRC 存入 LyricInjectCache，
+ 父模组后台线程 new NetMusicSound 时由本 Mixin(TAIL) 取缓存替换 lyricRecord。
+ 只注入构造器尾部，不注入 tick()：1.5.1 发布版的 NetMusicSound 未 override tick()，
+ 写 @Inject(method="tick") 会使整个 Mixin 因找不到目标而失效，连带歌词注入丢失。*/
 @Mixin(value = NetMusicSound.class, remap = false)
 public class NetMusicSoundMixin {
 

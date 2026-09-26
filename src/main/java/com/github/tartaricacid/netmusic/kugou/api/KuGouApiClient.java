@@ -25,8 +25,8 @@ public final class KuGouApiClient {
     private KuGouApiClient() {}
 
     /**
-     * 确保设备已注册。从配置加载已有的凭证，若无效则重新注册。
-     */
+ 确保设备已注册。从配置加载已有的凭证，若无效则重新注册。
+*/
     public static CompletableFuture<Boolean> ensureDeviceRegistered() {
         if (deviceReady && KuGouConfig.dfid != null && !KuGouConfig.dfid.isEmpty() && !"-".equals(KuGouConfig.dfid)) {
             return CompletableFuture.completedFuture(true);
@@ -65,11 +65,10 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 搜索歌曲。
-     * <p>
-     * 优先用 complexsearch.kugou.com(带 android 签名),失败时自动回退到 mobilecdn 公开 API。
-     * 无论走哪个分支,都保证不返回 null,并输出诊断日志。
-     */
+ 搜索歌曲。
+ 优先用 complexsearch.kugou.com(带 android 签名),失败时自动回退到 mobilecdn 公开 API。
+ 无论走哪个分支,都保证不返回 null,并输出诊断日志。
+*/
     public static CompletableFuture<List<Song>> search(String keyword, int page, int pageSize) {
         return CompletableFuture.supplyAsync(() -> {
             List<Song> result = Collections.emptyList();
@@ -102,9 +101,9 @@ public final class KuGouApiClient {
     }
 
     /**
-     * complexsearch 搜索(带 android 签名,可搜到无版权歌曲元数据)。
-     * 失败返回空列表,让外层自动回退 mobilecdn。
-     */
+ complexsearch 搜索(带 android 签名,可搜到无版权歌曲元数据)。
+ 失败返回空列表,让外层自动回退 mobilecdn。
+*/
     private static List<Song> searchViaComplexSearch(String keyword, int page, int pageSize) {
         try {
             int cltime = (int) (System.currentTimeMillis() / 1000);
@@ -113,7 +112,6 @@ public final class KuGouApiClient {
             String appid = "3116";
             int clientver = 11440;
 
-            // 业务参数(对齐 EchoMusic search.js)
             Map<String, Object> params = new LinkedHashMap<>();
             params.put("albumhide", 0);
             params.put("iscorrection", 1);
@@ -123,7 +121,6 @@ public final class KuGouApiClient {
             params.put("pagesize", pageSize);
             params.put("platform", "AndroidFilter");
 
-            // 默认认证参数(对齐 EchoMusic request.js defaultParams)
             params.put("dfid", KuGouConfig.dfid);
             params.put("mid", mid);
             params.put("uuid", "-");
@@ -371,23 +368,25 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 音质等级表（从低到高）。对齐 EchoMusic song.ts AUDIO_QUALITY_ORDER:
-     * ['128','320','flac','high','super']
-     */
+ 音质等级表（从低到高）。
+ ['128','320','flac','high','viper_tape']，末尾保留 DSD(super)。
+ 降级链：选中音质往下逐级尝试（super → viper_tape → high → flac → 320 → 128）。
+*/
     private static final AudioQuality[] QUALITY_ORDER_ASC = new AudioQuality[]{
             AudioQuality.STANDARD,
             AudioQuality.HQ,
             AudioQuality.SQ_FLAC,
             AudioQuality.HIGH,
+            AudioQuality.VIPER_TAPE,
             AudioQuality.SUPER_DSD
     };
 
     /**
-     * 给定用户请求的音质,返回 从该音质起按 高→低 降级的数组(相当于 EchoMusic slice(0,index+1).reverse)。
-     * 例:quality=super → [super,high,flac,320,128]
-     *    quality=high  → [high,flac,320,128]
-     *    null         → [320,128]（默认从 HQ 开始,但兼容模式会把音质传成 null 用原 hash 直接兜底）
-     */
+ 给定用户请求的音质,返回 从该音质起按 高→低 降级的数组。
+ 例:quality=super → [super,high,flac,320,128]
+ quality=high → [high,flac,320,128]
+ null → [320,128]（默认从 HQ 开始,但兼容模式会把音质传成 null 用原 hash 直接兜底）
+*/
     private static AudioQuality[] getQualityFallbackOrder(AudioQuality requested) {
         int idx = 1;
         if (requested != null) {
@@ -410,15 +409,14 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 获取歌曲播放 URL（指定音质）
-     * <p>
-     * 完整流程(与 EchoMusic resolver.ts 对齐):
-     *   0. POST /v2/get_res_privilege/lite 拉取 relateGoods[](含各音质独立 hash + level/quality 标记)
-     *   1. 音质降级链: 对每个音质优先找 relateGoods 匹配项 → 用 matched.hash(非原始 hash)
-     *        请求 v5/url, 并把 albumId/album_audio_id 一并传入。找不到匹配时用原始 hash 兜底。
-     *   2. 兼容性模式 fallback: 不带 quality 直接用原始 hash 调 v5/url
-     *   3. yiting → magic ppage_id → v6/priv_url 逐级兜底
-     */
+ 获取歌曲播放 URL（指定音质）
+ 完整流程:
+ 0. POST /v2/get_res_privilege/lite 拉取 relateGoods[](含各音质独立 hash + level/quality 标记)
+ 1. 音质降级链: 对每个音质优先找 relateGoods 匹配项 → 用 matched.hash(非原始 hash)
+ 请求 v5/url, 并把 albumId/album_audio_id 一并传入。找不到匹配时用原始 hash 兜底。
+ 2. 兼容性模式 fallback: 不带 quality 直接用原始 hash 调 v5/url
+ 3. yiting → magic ppage_id → v6/priv_url 逐级兜底
+*/
     public static CompletableFuture<String> getSongUrl(String hash, String albumId, AudioQuality quality) {
         return CompletableFuture.supplyAsync(() -> {
             long t0 = System.currentTimeMillis();
@@ -439,7 +437,7 @@ public final class KuGouApiClient {
 
             AudioQuality[] ladder = getQualityFallbackOrder(quality);
 
-            //        失败再 [matched.hash + album_id=albumIdL],都失败再走 fallback。
+            // 失败再 [matched.hash + album_id=albumIdL],都失败再走 fallback。
             for (int i = 0; i < ladder.length; i++) {
                 AudioQuality q = ladder[i];
                 boolean isLastInLadder = (i == ladder.length - 1);
@@ -475,7 +473,7 @@ public final class KuGouApiClient {
                 }
             }
 
-            // 步骤 2: 兼容模式(不带 quality,让服务端自己挑)对应 EchoMusic resolver.ts L209-224
+            // 步骤 2: 兼容模式(不带 quality,让服务端自己挑)
             KuGouLogger.warn("[NetMusicKuGou] All qualities exhausted for hash={}, trying compat (no quality)", lowerHash);
             String compatUrl = fetchAuthenticatedSongUrl(lowerHash, null, albumIdL);
             if (!compatUrl.isEmpty()) return compatUrl;
@@ -532,7 +530,27 @@ public final class KuGouApiClient {
         }
     }
 
-    /** 按音质匹配 relateGoods (对齐 EchoMusic doesRelateGoodMatchQuality song.ts L152) */
+    /**
+ 是否为「魔法音效」音质。
+ 只有 piano/acappella/subwoofer/ancient/dj/surnay 需要 magic_ 前缀，
+ 128/320/flac/high/viper_tape/super 均为真实音质，不能加前缀。
+*/
+    private static boolean isMagicEffectQuality(String quality) {
+        if (quality == null || quality.isEmpty()) return false;
+        switch (quality.toLowerCase()) {
+            case "piano":
+            case "acappella":
+            case "subwoofer":
+            case "ancient":
+            case "dj":
+            case "surnay":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** 按音质匹配 relateGoods */
     private static RelateGood matchRelateGoodForQuality(List<RelateGood> goods, AudioQuality q) {
         if (goods == null || goods.isEmpty()) return null;
         String qv = q == null ? "128" : q.getValue();
@@ -562,6 +580,8 @@ public final class KuGouApiClient {
                     hit = "high".equals(normQ) || "hires".equals(normQ) || "hi-res".equals(normQ) || "res".equals(normQ) || g.level == 6; break;
                 case "super":
                     hit = "super".equals(normQ) || "dsd".equals(normQ) || g.level == 7; break;
+                case "viper_tape":
+                    hit = "viper_tape".equals(normQ) || g.level == 101; break;
                 default: break;
             }
             if (hit) return g;
@@ -741,15 +761,13 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 方式2: trackercdn /v5/url 接口（KuGou官方使用的VIP歌曲接口）
-     * <p>
-     * ⚠️ 严格对齐 EchoMusic server/module/song_url.js (L15-L51):
-     *   - encryptKey=true: 只加 key 字段（MD5(hash+57ae12eb+appid+mid+userid)）
-     *   - notSign=true:  不要 signature 字段！（加了反而触发 31833 版权校验）
-     *   - version/clientver = 11430（与 song_url.js L26/L39 硬编码一致，不是 11440）
-     *   - GET 请求, x-router=trackercdn.kugou.com
-     *   - Lite 配套: page_id=967177915, pid=411, ppage_id=356753938,823673182,967485191
-     */
+ 方式2: trackercdn /v5/url 接口（KuGou官方使用的VIP歌曲接口）
+ - encryptKey=true: 只加 key 字段（MD5(hash+57ae12eb+appid+mid+userid)）
+ - notSign=true: 不要 signature 字段！（加了反而触发 31833 版权校验）
+ - version/clientver = 11430（硬编码，不是 11440）
+ - GET 请求, x-router=trackercdn.kugou.com
+ - Lite 配套: page_id=967177915, pid=411, ppage_id=356753938,823673182,967485191
+*/
     private static String fetchAuthenticatedSongUrl(String hash, AudioQuality quality, long albumId) {
         try {
             String dfid = KuGouConfig.dfid;
@@ -765,13 +783,14 @@ public final class KuGouApiClient {
             final int clientver = 11430;
 
             String qualityStr = (quality != null) ? quality.getValue() : "128";
-            if (!qualityStr.equals("128") && !qualityStr.equals("320") &&
-                !qualityStr.equals("flac") && !qualityStr.equals("high") && !qualityStr.equals("super")) {
+            // 只有「魔法音效」才加 magic_ 前缀
+            // （piano/acappella/subwoofer/ancient/dj/surnay），viper_tape 等真实音质不能加。
+            if (isMagicEffectQuality(qualityStr)) {
                 qualityStr = "magic_" + qualityStr;
             }
 
             Map<String, Object> params = new LinkedHashMap<>();
-            // 注意: EchoMusic resolver.ts 调 getSongUrl(matched.hash, quality) 时没传 album_id,
+            // 注意: 上游实现调 getSongUrl(matched.hash, quality) 时没传 album_id,
             // 因此服务端 params.album_id 为 0。传入真实 albumId 时也可能触发版权匹配失败。
             // 两种策略都试一次: 先 0, 再 albumId。这里 albumId 直接用传入值,外层循环负责两种尝试。
             params.put("album_id", albumId);
@@ -779,15 +798,15 @@ public final class KuGouApiClient {
             params.put("hash", hash.toLowerCase());
             params.put("ssa_flag", "is_fromtrack");
             params.put("version", clientver);
-            params.put("page_id", 967177915);              // Lite 值
+            params.put("page_id", 967177915);
             params.put("quality", qualityStr);
             params.put("album_audio_id", albumId);
             params.put("behavior", "play");
-            params.put("pid", 411);                        // Lite pid
+            params.put("pid", 411);
             params.put("cmd", 26);
             params.put("pidversion", 3001);
             params.put("IsFreePart", 0);
-            params.put("ppage_id", "356753938,823673182,967485191"); // Lite ppage_id
+            params.put("ppage_id", "356753938,823673182,967485191");
             params.put("cdnBackup", 1);
             params.put("module", "");
             params.put("clientver", clientver);
@@ -909,15 +928,14 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 方式4: 魔法 ppage_id 兜底（对应 EchoMusic resolver.ts:227 getSongUrl(hash, '', 356753938)）
-     * <p>
-     * 当所有正规途径都失败时,使用单值魔法 ppage_id=356753938 绕过无版权限制。
-     * 该 ppage_id 是 Lite 平台的兜底值,EchoMusic 在所有音质和 yiting 都失败后作为最后兜底使用。
-     * 关键点:
-     *   - quality = "128" (最低音质,最易获取)
-     *   - ppage_id = "356753938" (单值,非逗号分隔列表)
-     *   - page_id = 967177915, pid = 411 (Lite 平台配套值)
-     */
+ 方式4: 魔法 ppage_id 兜底
+ 当所有正规途径都失败时,使用单值魔法 ppage_id=356753938 绕过无版权限制。
+ 该 ppage_id 是 Lite 平台的兜底值，在所有音质和 yiting 都失败后作为最后兜底使用。
+ 关键点:
+ - quality = "128" (最低音质,最易获取)
+ - ppage_id = "356753938" (单值,非逗号分隔列表)
+ - page_id = 967177915, pid = 411 (Lite 平台配套值)
+*/
     private static String fetchMagicPpageUrl(String hash, long albumId) {
         try {
             String dfid = KuGouConfig.dfid;
@@ -939,11 +957,11 @@ public final class KuGouApiClient {
             params.put("hash", hash.toLowerCase());
             params.put("ssa_flag", "is_fromtrack");
             params.put("version", clientver);
-            params.put("page_id", 967177915);              // Lite 值
+            params.put("page_id", 967177915);
             params.put("quality", "128");                  // 最低音质,最易获取
             params.put("album_audio_id", 0L);
             params.put("behavior", "play");
-            params.put("pid", 411);                        // Lite pid
+            params.put("pid", 411);
             params.put("cmd", 26);
             params.put("pidversion", 3001);
             params.put("IsFreePart", 0);
@@ -1038,10 +1056,9 @@ public final class KuGouApiClient {
             String vipToken = KuGouConfig.vipToken != null ? KuGouConfig.vipToken : "";
             String vipType = KuGouConfig.vipType != null ? KuGouConfig.vipType : "0";
 
-            // 1. 组装 POST body(dataMap),严格对齐 EchoMusic song_url_new.js L14-44 的真实写法
-            //    注意字段类型:
-            //     - tracker_param.auth: "", open_time: "" (空字符串保留,不能删)
-            //     - vip: 直接用 vipType(来自 cookie,字符串或数字都接受,不要强转数字)
+            // 注意字段类型:
+            // - tracker_param.auth: "", open_time: "" (空字符串保留,不能删)
+            // - vip: 直接用 vipType(来自 cookie,字符串或数字都接受,不要强转数字)
             JsonObject body = new JsonObject();
             body.addProperty("area_code", "1");
             body.addProperty("behavior", "play");
@@ -1061,23 +1078,23 @@ public final class KuGouApiClient {
             resource.addProperty("type", "audio");
             body.add("resource", resource);
 
-            body.addProperty("token", token);  // 即使空也要传(EchoMusic song_url_new.js L27 无条件加)
+            body.addProperty("token", token);  // 即使空也要传
 
             String v6KeySalt = "185672dd44712f60bb1736df5a377e82";
             String trackerKey = CryptoUtils.md5(lowerHash + v6KeySalt + appid + mid + userid);
             JsonObject trackerParam = new JsonObject();
             trackerParam.addProperty("all_m", 1);
-            trackerParam.addProperty("auth", "");   // ⚠️ 必须保留空字符串(不能删!)song_url_new.js L30
+            trackerParam.addProperty("auth", "");   // ⚠️ 必须保留空字符串(不能删!)
             trackerParam.addProperty("is_free_part", 0);
             trackerParam.addProperty("key", trackerKey);
             trackerParam.addProperty("module_id", 0);
             trackerParam.addProperty("need_climax", 1);
             trackerParam.addProperty("need_xcdn", 1);
-            trackerParam.addProperty("open_time", ""); // ⚠️ 必须保留空字符串 song_url_new.js L36
+            trackerParam.addProperty("open_time", ""); // ⚠️ 必须保留空字符串
             trackerParam.addProperty("pid", "411");     // 字符串,不是数字
             trackerParam.addProperty("pidversion", "3001"); // 字符串
             trackerParam.addProperty("priv_vip_type", "6"); // 字符串
-            trackerParam.addProperty("viptoken", vipToken);  // 空也要传 song_url_new.js L40
+            trackerParam.addProperty("viptoken", vipToken);  // 空也要传
             body.add("tracker_param", trackerParam);
 
             body.addProperty("userid", String.valueOf(userid));
@@ -1298,7 +1315,7 @@ public final class KuGouApiClient {
                 }
 
                 int cltime = (int) (System.currentTimeMillis() / 1000);
-                // ⚠️ 优先使用 cookie 中的 KUGOU_API_MID（与 KuGou request.js 第35行一致）
+                // ⚠️ 优先使用 cookie 中的 KUGOU_API_MID
                 String kugouApiMid = KuGouConfig.cookies.get("KUGOU_API_MID");
                 String mid = (kugouApiMid != null && !kugouApiMid.isEmpty())
                         ? kugouApiMid
@@ -1307,10 +1324,9 @@ public final class KuGouApiClient {
 
                 // ⚠️ busi_type=concept 必须使用 Lite 版 appid/clientver！
                 // 错误值(1005/20489)会导致 error_code:20017 "params invalid"
-                String appid = "3116";        // liteAppid
+                String appid = "3116";
                 int clientver = 11440;
 
-                // 构建参数（完全对齐 KuGou request.js defaultParams + 业务参数）
                 Map<String, Object> params = new LinkedHashMap<>();
                 params.put("dfid", dfid);
                 params.put("mid", mid);
@@ -1327,9 +1343,8 @@ public final class KuGouApiClient {
                 // 业务参数 — concept=概念版(必须配Lite凭证)
                 params.put("busi_type", "concept");
 
-                // Android 签名 (对齐 KuGou helper.js signatureAndroidParams 第24-31行)
                 // ⚠️ salt 必须与 appid/clientver 配套！
-                String sigSalt = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";  // Lite salt
+                String sigSalt = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
                 List<String> keys = new ArrayList<>(params.keySet());
                 Collections.sort(keys);
                 StringBuilder paramsString = new StringBuilder();
@@ -1339,7 +1354,6 @@ public final class KuGouApiClient {
                 String signature = CryptoUtils.md5(sigSalt + paramsString.toString() + "" + sigSalt);
                 params.put("signature", signature);
 
-                // Headers（完全对齐 KuGou request.js 第41行）
                 Map<String, String> headers = new LinkedHashMap<>();
                 headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
                 headers.put("dfid", dfid);
@@ -1350,7 +1364,7 @@ public final class KuGouApiClient {
                 headers.put("kg-rec", "1");
                 headers.put("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F");
 
-                // ⚠️ 关键：完整 Cookie header（对齐 fetchAuthenticatedSongUrl 的做法）
+                // ⚠️ 关键：完整 Cookie header
                 // 缺少 Cookie 会导致 error_code:20017 "params invalid"
                 StringBuilder cookieSb = new StringBuilder();
                 cookieSb.append("KUGOU_API_PLATFORM=lite; ");
@@ -1391,14 +1405,12 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 获取酷狗服务器的当前时间戳（毫秒）。
-     * <p>
-     * 对应 KuGou server/module/server_now.js。
-     * 该接口支持 GET 方式（与 getVipInfo 同样的签名套路），
-     * 无需登录、未登录也可调用（用于在领取前确认 server 时区日期）。
-     *
-     * @return 成功返回毫秒时间戳；失败返回 -1
-     */
+ 获取酷狗服务器的当前时间戳（毫秒）。
+ 该接口支持 GET 方式（与 getVipInfo 同样的签名套路），
+ 无需登录、未登录也可调用（用于在领取前确认 server 时区日期）。
+
+ @return 成功返回毫秒时间戳；失败返回 -1
+*/
     public static CompletableFuture<Long> getServerNow() {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -1426,7 +1438,7 @@ public final class KuGouApiClient {
                 params.put("appid", appid);
                 params.put("clientver", clientver);
                 params.put("clienttime", String.valueOf(cltime));
-                params.put("plat", "3");  // 3=PC，server_now.js 用 plat=3
+                params.put("plat", "3");  // 3=PC
                 if (KuGouConfig.token != null && !KuGouConfig.token.isEmpty()) {
                     params.put("token", KuGouConfig.token);
                 }
@@ -1522,7 +1534,9 @@ public final class KuGouApiClient {
 
             JsonObject data = root.getAsJsonObject("data");
             StringBuilder sb = new StringBuilder();
-            sb.append("\n========== ").append(Component.translatable("netmusic_kugou.vip.status_header").getString()).append(" ==========\n");
+            sb.append("\n========== ")
+              .append(Component.translatable("netmusic_kugou.vip.status_header").getString())
+              .append(" ==========\n");
 
             // ⚠️ 实际API响应中，VIP信息在 data.busi_vip[] 数组中
             boolean foundSvip = false, foundTvip = false;
@@ -1540,66 +1554,82 @@ public final class KuGouApiClient {
                         foundSvip = true;
                         if (isVip == 1) {
                             hasActiveSvip = true;
-                            sb.append("[概念会员 SVIP] ✓ 已开通\n");
+                            sb.append("[").append(Component.translatable("netmusic_kugou.vip.svip_label").getString())
+                              .append("] ✓ ").append(Component.translatable("netmusic_kugou.vip.opened").getString()).append("\n");
                             if (item.has("vip_begin_time"))
-                                sb.append("  开通时间: ").append(item.get("vip_begin_time").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.begin_time").getString())
+                                  .append(": ").append(item.get("vip_begin_time").getAsString()).append("\n");
                             if (item.has("vip_end_time"))
-                                sb.append("  到期时间: ").append(item.get("vip_end_time").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.end_time").getString())
+                                  .append(": ").append(item.get("vip_end_time").getAsString()).append("\n");
                             if (item.has("vip_clearday"))
-                                sb.append("  结算日期: ").append(item.get("vip_clearday").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.clear_day").getString())
+                                  .append(": ").append(item.get("vip_clearday").getAsString()).append("\n");
                             if (item.has("vip_limit_quota") && item.get("vip_limit_quota").isJsonObject()) {
                                 JsonObject quota = item.getAsJsonObject("vip_limit_quota");
                                 if (quota.has("total"))
-                                    sb.append("  下载数量: ").append(quota.get("total").getAsInt()).append(" 首\n");
+                                    sb.append("  ").append(Component.translatable("netmusic_kugou.vip.download_quota").getString())
+                                      .append(": ").append(quota.get("total").getAsInt()).append(" 首\n");
                             }
                         } else {
                             String endTime = item.has("vip_end_time") ? item.get("vip_end_time").getAsString() : "";
                             if (!endTime.isEmpty()) {
-                                sb.append("[概念会员 SVIP] ✗ 已过期 (到期: ").append(endTime).append(")\n");
+                                sb.append("[").append(Component.translatable("netmusic_kugou.vip.svip_label").getString())
+                                  .append("] ✗ ").append(Component.translatable("netmusic_kugou.vip.expired", endTime).getString()).append("\n");
                             } else {
-                                sb.append("[概念会员 SVIP] ✗ 未开通\n");
+                                sb.append("[").append(Component.translatable("netmusic_kugou.vip.svip_label").getString())
+                                  .append("] ✗ ").append(Component.translatable("netmusic_kugou.vip.not_opened").getString()).append("\n");
                             }
                         }
                     } else if ("tvip".equals(productType)) {
                         foundTvip = true;
                         if (isVip == 1) {
                             hasActiveTvip = true;
-                            sb.append("[畅听会员 TVIP] ✓ 已开通\n");
+                            sb.append("[").append(Component.translatable("netmusic_kugou.vip.tvip_label").getString())
+                              .append("] ✓ ").append(Component.translatable("netmusic_kugou.vip.opened").getString()).append("\n");
                             if (item.has("vip_begin_time"))
-                                sb.append("  开通时间: ").append(item.get("vip_begin_time").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.begin_time").getString())
+                                  .append(": ").append(item.get("vip_begin_time").getAsString()).append("\n");
                             if (item.has("vip_end_time"))
-                                sb.append("  到期时间: ").append(item.get("vip_end_time").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.end_time").getString())
+                                  .append(": ").append(item.get("vip_end_time").getAsString()).append("\n");
                             if (item.has("vip_clearday"))
-                                sb.append("  结算日期: ").append(item.get("vip_clearday").getAsString()).append("\n");
+                                sb.append("  ").append(Component.translatable("netmusic_kugou.vip.clear_day").getString())
+                                  .append(": ").append(item.get("vip_clearday").getAsString()).append("\n");
                         } else {
                             String endTime = item.has("vip_end_time") ? item.get("vip_end_time").getAsString() : "";
                             if (!endTime.isEmpty()) {
-                                sb.append("[畅听会员 TVIP] ✗ 已过期 (到期: ").append(endTime).append(")\n");
+                                sb.append("[").append(Component.translatable("netmusic_kugou.vip.tvip_label").getString())
+                                  .append("] ✗ ").append(Component.translatable("netmusic_kugou.vip.expired", endTime).getString()).append("\n");
                             } else {
-                                sb.append("[畅听会员 TVIP] ✗ 未开通\n");
+                                sb.append("[").append(Component.translatable("netmusic_kugou.vip.tvip_label").getString())
+                                  .append("] ✗ ").append(Component.translatable("netmusic_kugou.vip.not_opened").getString()).append("\n");
                             }
                         }
                     }
                 }
             }
 
-            if (!foundSvip) sb.append("[概念会员 SVIP] - 无信息\n");
-            if (!foundTvip) sb.append("[畅听会员 TVIP] - 无信息\n");
+            if (!foundSvip) sb.append("[").append(Component.translatable("netmusic_kugou.vip.svip_label").getString())
+                    .append("] — ").append(Component.translatable("netmusic_kugou.vip.no_info").getString()).append("\n");
+            if (!foundTvip) sb.append("[").append(Component.translatable("netmusic_kugou.vip.tvip_label").getString())
+                    .append("] — ").append(Component.translatable("netmusic_kugou.vip.no_info").getString()).append("\n");
 
             sb.append("----------------------------------\n");
-            sb.append("账号ID: ").append(data.has("userid") ? data.get("userid").getAsString() : KuGouConfig.userid).append("\n");
+            sb.append(Component.translatable("netmusic_kugou.vip.account_id",
+                    data.has("userid") ? data.get("userid").getAsString() : KuGouConfig.userid).getString()).append("\n");
 
             boolean hasAnyVip = hasActiveSvip || hasActiveTvip;
             if (!hasAnyVip) {
-                sb.append("\n⚠ 当前VIP已过期或未开通，无法播放付费歌曲！");
+                sb.append("\n⚠ ").append(Component.translatable("netmusic_kugou.vip.no_vip_play_hint").getString());
                 String vipMsg = KuGouVipApi.lastVipResultMessage;
                 if (vipMsg != null && !vipMsg.isEmpty()) {
                     sb.append("\n  📋 ").append(vipMsg);
                 } else {
-                    sb.append("\n  概念版每日免费VIP，重启游戏后自动续领（每日限额）。");
+                    sb.append("\n  ").append(Component.translatable("netmusic_kugou.vip.daily_vip_hint").getString());
                 }
             } else {
-                sb.append("\n✓ VIP状态正常，可播放付费歌曲");
+                sb.append("\n✓ ").append(Component.translatable("netmusic_kugou.vip.normal").getString());
             }
 
             sb.append("\n==================================");
@@ -1639,11 +1669,10 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 搜索结果中的歌曲信息。
-     * <p>
-     * 来自 {@link #search} 返回的 mobilecdn.kugou.com 解析结果。
-     * mobilecdn 公开 API 不返回 id，所以 {@code id == hash}。
-     */
+ 搜索结果中的歌曲信息。
+ 来自 search 返回的 mobilecdn.kugou.com 解析结果。
+ mobilecdn 公开 API 不返回 id，所以 id == hash。
+*/
     public static final class Song {
         public final String id;
         public final String name;
@@ -1690,18 +1719,15 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 歌词下载结果
-     * <p>
-     * lyricContent 已经是 LRC 文本（KRC fmt 会被自动解码为 LRC）。
-     * format 透传 fmt（"lrc" / "krc" / ...）。
-     * <p>
-     * languageJson 是酷狗 language 字段 base64 解码后的 JSON 字符串，含 type=0 原音/type=1 中文翻译。
-     * 无翻译时为 null。
-     * <p>
-     * hasTranslation 标记 KRC 文本或 languageJson 中是否实际包含翻译数据。
-     * 调用方（{@link #getLyricWithFallback}）会优先选用 hasTranslation=true 的候选，
-     * 避免首选候选 score 最高但 KRC 内不含 [language:...] 行的情况。
-     */
+ 歌词下载结果
+ lyricContent 已经是 LRC 文本（KRC fmt 会被自动解码为 LRC）。
+ format 透传 fmt（"lrc" / "krc" / ...）。
+ languageJson 是酷狗 language 字段 base64 解码后的 JSON 字符串，含 type=0 原音/type=1 中文翻译。
+ 无翻译时为 null。
+ hasTranslation 标记 KRC 文本或 languageJson 中是否实际包含翻译数据。
+ 调用方（getLyricWithFallback）会优先选用 hasTranslation=true 的候选，
+ 避免首选候选 score 最高但 KRC 内不含 [language:...] 行的情况。
+*/
     public static final class LyricContent {
         public final String lyricContent;
         public final String format;
@@ -1725,36 +1751,31 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 搜索歌词候选（兼容重载：返回本地评分最高的单条）。
-     * <p>
-     * 内部委托 {@link #searchLyricCandidates}，取列表首条。需要更精确匹配或多候选回退时
-     * 请直接调用 {@link #searchLyricCandidates}。
-     *
-     * @param hash     酷狗 hash（歌曲级，{@code getSongUrl} 用的同一个）
-     * @param keyword  搜索关键字（一般用 "歌手 - 歌名"）
-     * @param duration 时长（毫秒），用于 KuGou 匹配更准的歌词，传 0 跳过
-     * @return 最佳候选；找不到时返回 null
-     */
+ 搜索歌词候选（兼容重载：返回本地评分最高的单条）。
+ 内部委托 searchLyricCandidates，取列表首条。需要更精确匹配或多候选回退时
+ 请直接调用 searchLyricCandidates。
+
+ @param hash 酷狗 hash（歌曲级，getSongUrl 用的同一个）
+ @param keyword 搜索关键字（一般用 "歌手 - 歌名"）
+ @param duration 时长（毫秒），用于 KuGou 匹配更准的歌词，传 0 跳过
+ @return 最佳候选；找不到时返回 null
+*/
     public static CompletableFuture<LyricCandidate> searchLyric(String hash, String keyword, int duration) {
         return searchLyricCandidates(hash, keyword, duration, "", "")
                 .thenApply(list -> (list == null || list.isEmpty()) ? null : list.get(0));
     }
 
     /**
-     * 搜索歌词候选并按本地匹配评分排序（最佳在前）。
-     * <p>
-     * 对应 KuGou server/module/search_lyric.js：访问 {@code https://lyrics.kugou.com/v1/search}，
-     * 该接口<strong>不使用</strong>默认签名、<strong>不携带</strong>默认参数（dfid/mid/appid...）。
-     * 仅需 {@code hash + keyword (+ lrctxt)}。返回全部候选，按本地评分 + 服务端 score 排序。
-     * 调用方可配合 {@link #getLyricWithFallback} 实现多候选回退。
-     *
-     * @param hash     酷狗 hash
-     * @param keyword  搜索关键字（一般用 "歌手 - 歌名"）
-     * @param duration 时长（毫秒），用于本地时长评分与服务端匹配，传 0 跳过
-     * @param songName 实际播放歌名，用于本地评分；为空时标题项给中性分
-     * @param singer   实际播放歌手，用于本地评分；为空时歌手项给中性分
-     * @return 按匹配度降序的候选列表；无候选时返回空列表
-     */
+ 搜索歌词候选并按本地匹配评分排序（最佳在前）。
+ 访问 https://lyrics.kugou.com/v1/search，不使用默认签名与默认参数，仅需 hash + keyword。
+ 调用方可配合 getLyricWithFallback 实现多候选回退。
+
+ @param hash 酷狗 hash
+ @param keyword 搜索关键字（一般用 "歌手 - 歌名"）
+ @param duration 时长（毫秒），用于本地时长评分与服务端匹配，传 0 跳过
+ @param songName 实际播放歌名，用于本地评分；为空时标题项给中性分
+ @param singer 实际播放歌手，用于本地评分；为空时歌手项给中性分
+ @return 按匹配度降序的候选列表；无候选时返回空列表*/
     public static CompletableFuture<List<LyricCandidate>> searchLyricCandidates(
             String hash, String keyword, int duration, String songName, String singer) {
         return CompletableFuture.supplyAsync(() -> {
@@ -1773,15 +1794,15 @@ public final class KuGouApiClient {
                 params.put("clientver", 11440);
                 params.put("duration", duration > 0 ? duration : 0);
                 params.put("hash", hash.toLowerCase());
-                params.put("keywords", keyword);  // 注意是 keywords 复数（与 EchoMusic 一致）
+                params.put("keywords", keyword);  // 注意是 keywords 复数
                 params.put("lrctxt", 1);
-                params.put("man", "yes");  // EchoMusic 传 man=yes，返回带翻译/罗马音的候选
+                params.put("man", "yes");  // 传 man=yes，返回带翻译/罗马音的候选
 
                 Map<String, String> headers = new LinkedHashMap<>();
                 headers.put("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
                 headers.put("Accept", "application/json, text/plain, */*");
 
-                // 双轨：先试 /v1/search（EchoMusic 新版），失败回退到公开 /search
+                // 双轨：先试 /v1/search，失败回退到公开 /search
                 HttpUtils.HttpResponse response = HttpUtils.get(
                         "https://lyrics.kugou.com/v1/search", headers, params);
                 KuGouLogger.info("[NetMusicKuGou] searchLyric v1 HTTP {} bodyLen={}",
@@ -1880,14 +1901,13 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 依次尝试候选列表下载歌词，直到拿到非空内容。主格式全部候选都为空时，自动回退到另一格式重试全部候选。
-     * <p>
-     * 把「多候选回退」与「krc→lrc 回退」统一收敛到此方法，刻录路径与即时补拉路径共用。
-     *
-     * @param candidates {@link #searchLyricCandidates} 返回的候选列表（已按匹配度排序）
-     * @param primaryFmt 首选格式 "krc" 或 "lrc"；为空时默认 "krc"
-     * @return 首个非空歌词内容；全部失败返回 null
-     */
+ 依次尝试候选列表下载歌词，直到拿到非空内容。主格式全部候选都为空时，自动回退到另一格式重试全部候选。
+ 把「多候选回退」与「krc→lrc 回退」统一收敛到此方法，刻录路径与即时补拉路径共用。
+
+ @param candidates searchLyricCandidates 返回的候选列表（已按匹配度排序）
+ @param primaryFmt 首选格式 "krc" 或 "lrc"；为空时默认 "krc"
+ @return 首个非空歌词内容；全部失败返回 null
+*/
     public static CompletableFuture<LyricContent> getLyricWithFallback(List<LyricCandidate> candidates, String primaryFmt) {
         if (candidates == null || candidates.isEmpty()) {
             return CompletableFuture.completedFuture(null);
@@ -1953,18 +1973,13 @@ public final class KuGouApiClient {
     }
 
     /**
-     * 下载歌词正文。
-     * <p>
-     * 对应 KuGou server/module/lyric.js：访问 {@code https://lyrics.kugou.com/download}，
-     * 该接口<strong>使用</strong>完整 Android 签名（与 /v5/url 一样带 dfid/mid/appid/... + signature）。
-     * 服务端返回 JSON 里的 {@code content} 字段是 base64 编码的歌词（fmt=krc 时是 KRC 二进制，
-     * fmt=lrc 时是 LRC 文本）。
-     *
-     * @param id         searchLyric 返回的 id
-     * @param accessKey  searchLyric 返回的 accesskey
-     * @param fmt        格式：{@code "lrc"} 或 {@code "krc"}，KRC 会被自动解码为 LRC 文本
-     * @return 歌词内容（已解码的 LRC 文本 + 原始 fmt）；失败时返回 null
-     */
+ 下载歌词正文。访问 https://lyrics.kugou.com/download，带完整 Android 签名。
+ content 字段为 base64 编码歌词（fmt=krc 为 KRC 二进制，fmt=lrc 为 LRC 文本）。
+
+ @param id searchLyric 返回的 id
+ @param accessKey searchLyric 返回的 accesskey
+ @param fmt 格式："lrc" 或 "krc"，KRC 会被自动解码为 LRC 文本
+ @return 歌词内容（已解码的 LRC 文本 + 原始 fmt）；失败时返回 null*/
     public static CompletableFuture<LyricContent> getLyric(String id, String accessKey, String fmt) {
         return CompletableFuture.supplyAsync(() -> {
             if (id == null || id.isEmpty() || accessKey == null || accessKey.isEmpty()) {

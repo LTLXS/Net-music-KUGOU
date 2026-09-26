@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.compat.display;
 
 import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.item.ItemMusicCD;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.support.CdAddonData;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
 import com.github.tartaricacid.netmusic.tileentity.TileEntityMusicPlayer;
@@ -15,16 +16,14 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * NetMusicDisplay 兼容用的上下文/缓存工具。
- * <p>
- * 背景：{@code com.netmusicdisplay.source.LyricCache.extractSongId} 只能从网易云 URL
- * {@code ?id=数字.mp3} 提 ID，对酷狗 URL 返回 -1 → 链路直接断在"仅支持网易云歌词"。
- * 本类提供：一个 fileHash → LyricRecord 服务端缓存（由父 mod 服务端 Mixin 写入），
- * 供 display compat source Mixin 在拦截 NetMusicDisplay 的 provideText/provideLine 时查询。
- * <p>
- * <b>key 设计</b>：用 fileHash（酷狗原曲 ID）作缓存 key 跨维度/跨玩家复用，
- * 同一首歌在多个音乐机上播放时无需重复解析。
- */
+ NetMusicDisplay 兼容用的上下文/缓存工具。
+ 背景：com.netmusicdisplay.source.LyricCache.extractSongId 只能从网易云 URL
+ ?id=数字.mp3 提 ID，对酷狗 URL 返回 -1 → 链路直接断在"仅支持网易云歌词"。
+ 本类提供：一个 fileHash → LyricRecord 服务端缓存（由父 mod 服务端 Mixin 写入），
+ 供 display compat source Mixin 在拦截 NetMusicDisplay 的 provideText/provideLine 时查询。
+ key 设计：用 fileHash（酷狗原曲 ID）作缓存 key 跨维度/跨玩家复用，
+ 同一首歌在多个音乐机上播放时无需重复解析。
+*/
 public final class KuGouDisplayCompat {
     private KuGouDisplayCompat() {}
 
@@ -32,16 +31,15 @@ public final class KuGouDisplayCompat {
     private static final ConcurrentHashMap<String, LyricRecord> LYRIC_BY_HASH = new ConcurrentHashMap<>();
 
     /**
-     * pos → fileHash（最近一次写入的）。同一个音乐机可能切换歌曲，
-     * 用 put 覆盖即可。
-     */
+ pos → fileHash（最近一次写入的）。同一个音乐机可能切换歌曲，
+ 用 put 覆盖即可。
+*/
     private static final ConcurrentHashMap<BlockPos, String> HASH_BY_POS = new ConcurrentHashMap<>();
 
     /**
-     * 写入 fileHash → LyricRecord 映射。幂等：相同 hash 覆盖即可（同 hash = 同一首歌）。
-     * <p>
-     * 调用时机：刻录完成（服务端 CDBurnerMenuMixin）。
-     */
+ 写入 fileHash → LyricRecord 映射。幂等：相同 hash 覆盖即可（同 hash = 同一首歌）。
+ 调用时机：刻录完成（服务端 CDBurnerMenuMixin）。
+*/
     public static void putLyricByHash(String fileHash, LyricRecord record) {
         if (fileHash != null && !fileHash.isEmpty() && record != null) {
             LYRIC_BY_HASH.put(fileHash, record);
@@ -54,8 +52,8 @@ public final class KuGouDisplayCompat {
     }
 
     /**
-     * 把音乐机位置登记到 fileHash。同一音乐机可能切歌，用 put 覆盖。
-     */
+ 把音乐机位置登记到 fileHash。同一音乐机可能切歌，用 put 覆盖。
+*/
     public static void registerPos(BlockPos pos, String fileHash) {
         if (pos != null && fileHash != null && !fileHash.isEmpty()) {
             HASH_BY_POS.put(pos, fileHash);
@@ -68,9 +66,9 @@ public final class KuGouDisplayCompat {
     }
 
     /**
-     * 服务端 Mixin 在 setPlayToClient 命中预取并写好歌词后调：
-     * 把 fileHash 和 LyricRecord 同时落库，方便 display compat source Mixin 查询。
-     */
+ 服务端 Mixin 在 setPlayToClient 命中预取并写好歌词后调：
+ 把 fileHash 和 LyricRecord 同时落库，方便 display compat source Mixin 查询。
+*/
     public static void putAll(BlockPos pos, String fileHash, LyricRecord record) {
         registerPos(pos, fileHash);
         putLyricByHash(fileHash, record);
@@ -90,10 +88,26 @@ public final class KuGouDisplayCompat {
 
         if (!player.isPlay()) return null;
 
-        Optional<CdAddonData> optData = CdNbtHelper.readOriginalInfo(cd);
-        if (optData.isEmpty()) return null;
-
-        String fileHash = optData.get().fileHash();
+        // 列表CD（netMusicList 播放列表）每首歌的元数据按 songUrl 存于 NetMusicKuGouSongs，
+        // 顶层 NetMusicKuGouCdAddon 只是烧录残留（最后一首），直接用会取到另一首歌的歌词。
+        // 优先用服务端 setPlayToClient 时为“当前曲目”登记的 pos→fileHash（已按 songUrl 取逐曲元数据）。
+        String fileHash = getHashByPos(sourcePos);
+        if (fileHash == null || fileHash.isEmpty()) {
+            String playUrl = info.songUrl;
+            CdAddonData addon;
+            if (NetMusicListCompat.isMusicListItem(cd)) {
+                addon = CdNbtHelper.getSongAddon(cd, playUrl);
+                if (!addon.hasFileHash()) {
+                    Optional<CdAddonData> top = CdNbtHelper.readOriginalInfo(cd);
+                    if (top.isPresent()) addon = top.get();
+                }
+            } else {
+                Optional<CdAddonData> optData = CdNbtHelper.readOriginalInfo(cd);
+                if (optData.isEmpty()) return null;
+                addon = optData.get();
+            }
+            fileHash = addon.fileHash();
+        }
         if (fileHash == null || fileHash.isEmpty()) return null;
 
         // 确保 pos → fileHash 映射最新（切歌后覆盖）

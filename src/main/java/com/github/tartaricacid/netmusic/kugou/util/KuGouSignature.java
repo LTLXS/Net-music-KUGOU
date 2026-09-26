@@ -4,9 +4,8 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * 酷狗API 签名算法工具类
- * 参照 KuGou 桌面应用 server/util/helper.js 实现
- */
+ 酷狗API 签名算法工具类
+*/
 public final class KuGouSignature {
 
     public static final String ANDROID_SECRET = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";

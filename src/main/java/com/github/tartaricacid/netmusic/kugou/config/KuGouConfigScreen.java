@@ -5,15 +5,19 @@ import com.github.tartaricacid.netmusic.kugou.api.KuGouLoginApi;
 import com.github.tartaricacid.netmusic.kugou.api.KuGouVipApi;
 import com.github.tartaricacid.netmusic.kugou.client.gui.KuGouLoginScreen;
 import com.github.tartaricacid.netmusic.kugou.support.VipRetryScheduler;
+import com.github.tartaricacid.netmusic.kugou.util.CacheManager;
 import me.shedaniel.clothconfig2.api.ConfigBuilder;
 import me.shedaniel.clothconfig2.api.ConfigCategory;
 import me.shedaniel.clothconfig2.api.ConfigEntryBuilder;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.toasts.Toast;
+import net.minecraft.client.gui.components.toasts.ToastComponent;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
-/**
- * Cloth Config 配置界面构建（原内联在 {@code NetMusicKuGou#createConfigScreen}，现已抽出独立成类）。
- */
+import java.util.Optional;
+
 public final class KuGouConfigScreen {
     private KuGouConfigScreen() {
     }
@@ -22,7 +26,10 @@ public final class KuGouConfigScreen {
         ConfigBuilder builder = ConfigBuilder.create()
                 .setParentScreen(parent)
                 .setTitle(Component.translatable("netmusic_kugou.config.title"))
-                .setSavingRunnable(ClientConfig.SPEC::save);
+                .setSavingRunnable(() -> {
+                    ClientConfig.SPEC.save();
+                    ServerConfig.SPEC.save();
+                });
 
         ConfigEntryBuilder entryBuilder = builder.entryBuilder();
 
@@ -54,19 +61,31 @@ public final class KuGouConfigScreen {
                 .setNameProvider(type -> type.getDisplayName())
                 .setSaveConsumer(ClientConfig::setProvider)
                 .build());
-        sourceCat.addEntry(entryBuilder.startStrField(Component.translatable("netmusic_kugou.config.vip_cookie"), ClientConfig.getVipCookie())
+        sourceCat.addEntry(entryBuilder.startStrField(Component.translatable("netmusic_kugou.config.vip_cookie"), ServerConfig.getVipCookie())
                 .setDefaultValue("")
                 .setTooltip(Component.translatable("netmusic_kugou.config.vip_cookie.tooltip"))
-                .setSaveConsumer(ClientConfig.VIP_COOKIE::set)
+                .setSaveConsumer(ServerConfig.VIP_COOKIE::set)
                 .build());
         sourceCat.addEntry(entryBuilder.startSelector(
                 Component.translatable("netmusic_kugou.config.audio_quality"),
-                AudioQuality.values(),
+                ClientConfig.getSelectableAudioQualities(),
                 ClientConfig.getAudioQuality())
                 .setDefaultValue(AudioQuality.HQ)
                 .setTooltip(Component.translatable("netmusic_kugou.config.audio_quality.tooltip"))
                 .setNameProvider(q -> q.getDisplayName())
                 .setSaveConsumer(ClientConfig::setAudioQuality)
+                .build());
+        sourceCat.addEntry(entryBuilder.startBooleanToggle(Component.translatable("netmusic_kugou.config.viper_tape_enabled"), ClientConfig.isViperTapeEnabled())
+                .setDefaultValue(false)
+                .setTooltip(Component.translatable("netmusic_kugou.config.viper_tape_enabled.tooltip"))
+                .setSaveConsumer(v -> {
+                    ClientConfig.VIPER_TAPE_ENABLED.set(v);
+                    // 关闭母带时，若当前音质就是母带则回退到 Hi-Res
+                    if (!v && ClientConfig.AUDIO_QUALITY.get() != null
+                            && AudioQuality.VIPER_TAPE.getValue().equalsIgnoreCase(ClientConfig.AUDIO_QUALITY.get())) {
+                        ClientConfig.setAudioQuality(AudioQuality.HIGH);
+                    }
+                })
                 .build());
 
         ConfigCategory vipCat = builder.getOrCreateCategory(Component.translatable("netmusic_kugou.config.category.vip"));
@@ -112,6 +131,83 @@ public final class KuGouConfigScreen {
                 .setSaveConsumer(ClientConfig.LYRIC_SHOW_ROMAJI::set)
                 .build());
 
+        ConfigCategory moreCat = builder.getOrCreateCategory(Component.translatable("netmusic_kugou.config.category.more"));
+
+        moreCat.addEntry(entryBuilder.startBooleanToggle(Component.translatable("netmusic_kugou.config.cache_enabled"),
+                        ClientConfig.CACHE_ENABLED.get())
+                .setDefaultValue(true)
+                .setTooltip(Component.translatable("netmusic_kugou.config.cache_enabled.tip"))
+                .setSaveConsumer(ClientConfig.CACHE_ENABLED::set)
+                .build());
+
+        moreCat.addEntry(entryBuilder.startLongSlider(Component.translatable("netmusic_kugou.config.cache_max_mb"),
+                        ClientConfig.CACHE_MAX_MB.get(), 0L, 8192L)
+                .setDefaultValue(2048L)
+                .setTooltip(Component.translatable("netmusic_kugou.config.cache_max_mb.tip"))
+                .setSaveConsumer(ClientConfig.CACHE_MAX_MB::set)
+                .build());
+
+        ButtonEntry clearCacheButton = new ButtonEntry(
+                Component.empty(),
+                Component.translatable("netmusic_kugou.config.clear_all_cache"),
+                () -> {
+                    CacheManager.clearAll();
+                    Minecraft.getInstance().getToasts().addToast(new CacheClearedToast(
+                            Component.translatable("netmusic_kugou.config.clear_all_cache.done")));
+                },
+                () -> Optional.of(new Component[]{
+                        Component.translatable("netmusic_kugou.config.clear_all_cache.tip")}));
+        moreCat.addEntry(clearCacheButton);
+
+        moreCat.addEntry(entryBuilder.startSelector(
+                        Component.translatable("netmusic_kugou.config.log_level"),
+                        KuGouLogger.LogLevel.values(),
+                        KuGouLogger.getLevel())
+                        .setDefaultValue(KuGouLogger.LogLevel.NORMAL)
+                        .setTooltip(Component.translatable("netmusic_kugou.config.log_level.tooltip"))
+                        .setNameProvider(lvl -> Component.translatable(switch (lvl) {
+                        case MINIMAL -> "netmusic_kugou.config.log_level.minimal";
+                        case NORMAL -> "netmusic_kugou.config.log_level.normal";
+                        case DETAILED -> "netmusic_kugou.config.log_level.detailed";
+                        }))
+                .setSaveConsumer(lvl -> {
+                    ServerConfig.LOG_LEVEL.set(lvl);
+                    KuGouLogger.setLevel(lvl);
+                })
+                .build());
+
         return builder.build();
+    }
+
+    /**
+ 轻量自定义 Toast：用于「已清空全部歌曲缓存」的即时提示。
+ 不直接用 SystemToast.SystemToastId，因为该嵌套枚举在部分 1.20.1 Forge 映射里无法解析。
+*/
+    private static final class CacheClearedToast implements Toast {
+        private final Component message;
+
+        CacheClearedToast(Component message) {
+            this.message = message;
+        }
+
+        @Override
+        public int width() {
+            return 160;
+        }
+
+        @Override
+        public int height() {
+            return 32;
+        }
+
+        @Override
+        public Visibility render(GuiGraphics guiGraphics, ToastComponent toastComponent, long timeSinceLastVisible) {
+            int w = width(), h = height();
+            guiGraphics.fill(0, 0, w, h, 0xC0101010);
+            guiGraphics.fill(0, 0, w, 1, 0xFF000000);
+            guiGraphics.fill(0, h - 1, w, h, 0xFF000000);
+            guiGraphics.drawString(Minecraft.getInstance().font, message, 8, 11, 0xFFFFFF, false);
+            return timeSinceLastVisible >= 2000L ? Toast.Visibility.HIDE : Toast.Visibility.SHOW;
+        }
     }
 }

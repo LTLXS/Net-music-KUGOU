@@ -11,11 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
-/**
- * 酷狗登录态（token / userid / 设备指纹 / VIP 状态 / cookies）的持久化管理。
- * 状态以 JSON 落盘到 config/NETMUSICCANNEEDKUGOU/netmusic-kugou-state.json，
- * 进程退出或世界关闭时 {@link #saveState()} 写入，启动时 {@link #loadState()} 读回。
- */
 public final class LoginStateManager {
     private static final Gson GSON = new Gson();
     private static final Path CONFIG_DIR = FMLPaths.CONFIGDIR.get().resolve("NETMUSICCANNEEDKUGOU");

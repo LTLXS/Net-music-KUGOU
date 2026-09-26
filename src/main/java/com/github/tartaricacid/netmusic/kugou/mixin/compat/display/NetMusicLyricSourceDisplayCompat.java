@@ -13,10 +13,10 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * 让 NetMusicDisplay 的"单行歌词"展示源在播放酷狗 CD 时显示酷狗歌词。
- * 不再依赖 LyricCacheDisplayCompat（LyricCache 类在 mixin prepare 前就已加载，
- * 用类引用会导致 NetMusicDisplay 缺失时 Mixin 加载崩溃）——这里直接从 KuGouDisplayCompat 取数据。
- */
+ 让 NetMusicDisplay 的"单行歌词"展示源在播放酷狗 CD 时显示酷狗歌词。
+ 不再依赖 LyricCacheDisplayCompat（LyricCache 类在 mixin prepare 前就已加载，
+ 用类引用会导致 NetMusicDisplay 缺失时 Mixin 加载崩溃）——这里直接从 KuGouDisplayCompat 取数据。
+*/
 @Mixin(NetMusicLyricSource.class)
 public class NetMusicLyricSourceDisplayCompat {
     @Inject(method = "provideLine", at = @At("HEAD"), remap = false, cancellable = true, require = 0)

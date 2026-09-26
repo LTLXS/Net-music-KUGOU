@@ -27,6 +27,24 @@ public final class KuGouLogger {
 
     public static final Path LOG_DIR = FMLPaths.CONFIGDIR.get().resolve(LOG_DIR_NAME);
 
+    /**
+ 日志级别：
+ - MINIMAL — 仅 ERROR 与 WARN（最安静）
+ - NORMAL — 在 MINIMAL 基础上 + INFO（默认，保持原有行为）
+ - DETAILED — 在 NORMAL 基础上 + DEBUG / VERBOSE（调试用）
+*/
+    public enum LogLevel { MINIMAL, NORMAL, DETAILED }
+
+    private static volatile LogLevel level = LogLevel.NORMAL;
+
+    public static void setLevel(LogLevel lvl) {
+        level = (lvl == null) ? LogLevel.NORMAL : lvl;
+    }
+
+    public static LogLevel getLevel() {
+        return level;
+    }
+
     private static Path currentLogFile;
 
     private static final ConcurrentLinkedQueue<String> logQueue = new ConcurrentLinkedQueue<>();
@@ -68,11 +86,13 @@ public final class KuGouLogger {
     }
 
     public static void info(String msg) {
+        if (level == LogLevel.MINIMAL) return;
         LOGGER.info(msg);
         enqueue("INFO", msg);
     }
 
     public static void info(String format, Object... args) {
+        if (level == LogLevel.MINIMAL) return;
         LOGGER.info(format, args);
         enqueue("INFO", formatMessage(format, args));
     }
@@ -103,13 +123,27 @@ public final class KuGouLogger {
     }
 
     public static void debug(String msg) {
+        if (level != LogLevel.DETAILED) return;
         LOGGER.debug(msg);
         enqueue("DEBUG", msg);
     }
 
     public static void debug(String format, Object... args) {
+        if (level != LogLevel.DETAILED) return;
         LOGGER.debug(format, args);
         enqueue("DEBUG", formatMessage(format, args));
+    }
+
+    public static void verbose(String msg) {
+        if (level != LogLevel.DETAILED) return;
+        LOGGER.debug(msg);
+        enqueue("VERBOSE", msg);
+    }
+
+    public static void verbose(String format, Object... args) {
+        if (level != LogLevel.DETAILED) return;
+        LOGGER.debug(format, args);
+        enqueue("VERBOSE", formatMessage(format, args));
     }
 
     private static void enqueue(String level, String msg) {

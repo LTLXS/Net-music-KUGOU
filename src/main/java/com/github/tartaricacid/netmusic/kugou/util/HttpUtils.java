@@ -74,6 +74,37 @@ public final class HttpUtils {
         return execute(conn);
     }
 
+    /**
+ GET 但不自动跟随 3xx 跳转，跳转地址放在 location。
+ QQ 登录回调会把 openid / access_token 放在 Location 上，需要逐跳解析。
+*/
+    public static HttpResponse getNoRedirect(String url, Map<String, String> headers, Map<String, Object> params) throws IOException {
+        String fullUrl = buildUrl(url, params);
+        HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
+        applyTrustAllIfHttps(conn);
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(CONNECT_TIMEOUT);
+        conn.setReadTimeout(READ_TIMEOUT);
+        conn.setInstanceFollowRedirects(false);
+        applyHeaders(conn, headers);
+        HttpResponse resp = execute(conn);
+        String loc = conn.getHeaderField("Location");
+        return new HttpResponse(resp.statusCode, resp.body, resp.cookies, loc);
+    }
+
+    /** GET 二进制响应（二维码图片等），同时带回 Set-Cookie */
+    public static BinaryHttpResponse getBinary(String url, Map<String, String> headers, Map<String, Object> params) throws IOException {
+        String fullUrl = buildUrl(url, params);
+        HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
+        applyTrustAllIfHttps(conn);
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(CONNECT_TIMEOUT);
+        conn.setReadTimeout(READ_TIMEOUT);
+        conn.setInstanceFollowRedirects(true);
+        applyHeaders(conn, headers);
+        return executeBinary(conn);
+    }
+
     public static HttpResponse postForm(String url, Map<String, String> headers, Map<String, Object> params) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         applyTrustAllIfHttps(conn);
@@ -97,9 +128,9 @@ public final class HttpUtils {
     }
 
     /**
-     * POST 请求：原始字符串 body + URL query 参数
-     * 用于设备注册等需要 raw body 的 API
-     */
+ POST 请求：原始字符串 body + URL query 参数
+ 用于设备注册等需要 raw body 的 API
+*/
     public static HttpResponse postRaw(String url, Map<String, String> headers, Map<String, Object> queryParams, String rawBody) throws IOException {
         String fullUrl = buildUrl(url, queryParams);
         HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
@@ -144,10 +175,12 @@ public final class HttpUtils {
         conn.connect();
         int code = conn.getResponseCode();
 
+        Map<String, String> respCookies = parseCookies(conn);
+
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         if (is == null) {
             conn.disconnect();
-            return new BinaryHttpResponse(code, new byte[0]);
+            return new BinaryHttpResponse(code, new byte[0], respCookies);
         }
 
         String encoding = conn.getContentEncoding();
@@ -163,16 +196,37 @@ public final class HttpUtils {
         }
 
         conn.disconnect();
-        return new BinaryHttpResponse(code, buffer.toByteArray());
+        return new BinaryHttpResponse(code, buffer.toByteArray(), respCookies);
+    }
+
+    private static Map<String, String> parseCookies(HttpURLConnection conn) {
+        Map<String, String> respCookies = new HashMap<>();
+        for (Map.Entry<String, List<String>> entry : conn.getHeaderFields().entrySet()) {
+            if ("Set-Cookie".equalsIgnoreCase(entry.getKey())) {
+                for (String cookieStr : entry.getValue()) {
+                    String[] parts = cookieStr.split(";")[0].split("=", 2);
+                    if (parts.length == 2) {
+                        respCookies.put(parts[0].trim(), parts[1].trim());
+                    }
+                }
+            }
+        }
+        return respCookies;
     }
 
     public static class BinaryHttpResponse {
         public final int statusCode;
         public final byte[] body;
+        public final Map<String, String> cookies;
 
         public BinaryHttpResponse(int statusCode, byte[] body) {
+            this(statusCode, body, new HashMap<>());
+        }
+
+        public BinaryHttpResponse(int statusCode, byte[] body, Map<String, String> cookies) {
             this.statusCode = statusCode;
             this.body = body;
+            this.cookies = cookies;
         }
 
         public boolean isOk() {
@@ -231,18 +285,7 @@ public final class HttpUtils {
         conn.connect();
         int code = conn.getResponseCode();
 
-        Map<String, String> respCookies = new HashMap<>();
-        Map<String, List<String>> headerFields = conn.getHeaderFields();
-        for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
-            if ("Set-Cookie".equalsIgnoreCase(entry.getKey())) {
-                for (String cookieStr : entry.getValue()) {
-                    String[] parts = cookieStr.split(";")[0].split("=", 2);
-                    if (parts.length == 2) {
-                        respCookies.put(parts[0].trim(), parts[1].trim());
-                    }
-                }
-            }
-        }
+        Map<String, String> respCookies = parseCookies(conn);
 
         InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
         if (is == null) {
@@ -289,11 +332,18 @@ public final class HttpUtils {
         public final int statusCode;
         public final String body;
         public final Map<String, String> cookies;
+        /** 仅 getNoRedirect 会填充：3xx 的 Location 头 */
+        public final String location;
 
         public HttpResponse(int statusCode, String body, Map<String, String> cookies) {
+            this(statusCode, body, cookies, null);
+        }
+
+        public HttpResponse(int statusCode, String body, Map<String, String> cookies, String location) {
             this.statusCode = statusCode;
             this.body = body;
             this.cookies = cookies;
+            this.location = location;
         }
 
         public boolean isOk() {

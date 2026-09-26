@@ -2,6 +2,7 @@ package com.github.tartaricacid.netmusic.kugou.util;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 import java.security.SecureRandom;
 
@@ -19,6 +20,21 @@ public final class CryptoUtils {
             return sb.toString();
         } catch (Exception e) {
             throw new RuntimeException("MD5 failed", e);
+        }
+    }
+
+    /** SHA-1（小写 hex），微信开放平台 qrconnect 签名用 */
+    public static String sha1(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-1 algorithm not found", e);
         }
     }
 

@@ -4,6 +4,8 @@ import com.github.tartaricacid.netmusic.client.api.IAudioStreamHandler;
 import com.github.tartaricacid.netmusic.client.audio.ChunkedAudioStream;
 import com.github.tartaricacid.netmusic.client.audio.MusicBufferedInputStream;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
+import com.github.tartaricacid.netmusic.kugou.config.ClientConfig;
+import com.github.tartaricacid.netmusic.kugou.util.CacheManager;
 import com.github.tartaricacid.netmusic.util.Mp3Util;
 import com.google.common.net.HttpHeaders;
 
@@ -50,6 +52,19 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
         KuGouLogger.info("[KuGouAudio] Begin download stream: {}", urlPreview);
         long t0 = System.currentTimeMillis();
 
+        String cacheKey = CacheManager.cacheKeyForUrl(urlStr);
+        if (ClientConfig.CACHE_ENABLED.get() && CacheManager.isCached(cacheKey)) {
+            try {
+                BufferedInputStream bis = new MusicBufferedInputStream(CacheManager.openCached(cacheKey));
+                Mp3Util.skipID3(bis);
+                AudioInputStream ais = AudioSystem.getAudioInputStream(bis);
+                KuGouLogger.info("[KuGouAudio] Cache HIT, serving from disk: {}", cacheKey);
+                return ais;
+            } catch (Throwable t) {
+                KuGouLogger.warn("[KuGouAudio] cache read failed, fallback to network: {}", t.getMessage());
+            }
+        }
+
         try {
             Function<Long, HttpRequest> requestFactory = start -> {
                 HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(urlStr))
@@ -76,6 +91,8 @@ public class KuGouAudioStreamHandler implements IAudioStreamHandler {
                     ais.getFormat().getSampleRate(),
                     ais.getFormat().getChannels(),
                     urlPreview);
+            CacheManager.startSongDownload(urlStr, cacheKey);
+
             return ais;
         } catch (UnsupportedAudioFileException | IOException e) {
             long dt = System.currentTimeMillis() - t0;

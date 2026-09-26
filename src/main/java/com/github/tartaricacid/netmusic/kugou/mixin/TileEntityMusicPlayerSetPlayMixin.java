@@ -3,6 +3,7 @@ package com.github.tartaricacid.netmusic.kugou.mixin;
 import com.github.tartaricacid.netmusic.api.lyric.LyricRecord;
 import com.github.tartaricacid.netmusic.kugou.KuGouLogger;
 import com.github.tartaricacid.netmusic.kugou.compat.display.KuGouDisplayCompat;
+import com.github.tartaricacid.netmusic.kugou.compat.netmusiclist.NetMusicListCompat;
 import com.github.tartaricacid.netmusic.kugou.lyric.LrcConverter;
 import com.github.tartaricacid.netmusic.kugou.support.CdAddonData;
 import com.github.tartaricacid.netmusic.kugou.support.CdNbtHelper;
@@ -51,6 +52,11 @@ public class TileEntityMusicPlayerSetPlayMixin {
             BlockPos pos = self.getBlockPos();
             Level level = self.getLevel();
 
+            // 列表CD（netMusicList）同一 pos 下有多首歌，按 pos 键的预取会跨曲目互相污染：
+            // 上一首的残留预取会被取回并把当前曲的 songUrl 覆盖成上一首的 URL，导致 HUD/歌词显示旧歌、
+            // 唱片机 GUI 显示新歌，甚至因重播产生双声。列表CD 每首的 songUrl 由 netMusicList 自己管理，
+            // 这里只做歌词注入，不跑预取/续期/重播/URL 覆盖。
+            if (!NetMusicListCompat.isMusicListItem(cd)) {
             String oldCdUrl = playUrl;
             String oldInfoUrl = (info != null) ? info.songUrl : null;
 
@@ -102,6 +108,7 @@ public class TileEntityMusicPlayerSetPlayMixin {
                         oldCdUrl == null ? 0 : oldCdUrl.length(),
                         (System.currentTimeMillis() - t0));
             }
+            } // end: if (!NetMusicListCompat.isMusicListItem(cd))
 
             try {
                 String lrcText = addon.hasLrc() ? addon.lrc() : null;

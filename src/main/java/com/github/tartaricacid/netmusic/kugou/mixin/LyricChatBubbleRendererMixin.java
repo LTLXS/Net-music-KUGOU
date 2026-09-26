@@ -104,11 +104,11 @@ public abstract class LyricChatBubbleRendererMixin implements IChatBubbleRendere
     }
 
     /**
-     * @author KuGouAddon
-     * @reason 把父模组"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行；
-     *         行数由 {@link ClientConfig} 控制。
-     *         <p>布局：翻译在顶（与父模组 2 行保持一致），原文在中，罗马音在底。
-     */
+ @author KuGouAddon
+ @reason 把父模组"原文 + 翻译"双行扩展为"原文 + 翻译 + 罗马音"最多三行；
+ 行数由 ClientConfig 控制。
+ 布局：翻译在顶（与父模组 2 行保持一致），原文在中，罗马音在底。
+*/
     @Overwrite(remap = false)
     public void render(EntityMaidRenderer renderer, EntityGraphics graphics) {
         final LyricRecord tmpLyric = this.lyric;
@@ -195,10 +195,10 @@ public abstract class LyricChatBubbleRendererMixin implements IChatBubbleRendere
     }
 
     /**
-     * @author KuGouAddon
-     * @reason 根据当前显示的实际行数动态返回气泡高度。
-     *         1 行=12, 2 行=24, 3 行=36。父模组原版无脑返回 24（只要有 transLyrics）。
-     */
+ @author KuGouAddon
+ @reason 根据当前显示的实际行数动态返回气泡高度。
+ 1 行=12, 2 行=24, 3 行=36。父模组原版无脑返回 24（只要有 transLyrics）。
+*/
     @Overwrite(remap = false)
     public int getHeight() {
         if (this.lyric == null) {
@@ -220,9 +220,9 @@ public abstract class LyricChatBubbleRendererMixin implements IChatBubbleRendere
     }
 
     /**
-     * @author KuGouAddon
-     * @reason 根据当前显示的所有行（含罗马音）动态返回气泡宽度。
-     */
+ @author KuGouAddon
+ @reason 根据当前显示的所有行（含罗马音）动态返回气泡宽度。
+*/
     @Overwrite(remap = false)
     public int getWidth() {
         final LyricRecord tmpLyric = this.lyric;

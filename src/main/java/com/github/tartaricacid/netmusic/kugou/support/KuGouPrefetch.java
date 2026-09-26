@@ -9,8 +9,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 酷狗 URL 异步预取缓存。
- */
+ 酷狗 URL 异步预取缓存。
+*/
 public final class KuGouPrefetch {
     private KuGouPrefetch() {}
 
